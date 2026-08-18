@@ -7,7 +7,7 @@
 
 <img width="930" height="1105" alt="image" src="https://github.com/user-attachments/assets/d3af5474-b4ce-4767-bb98-a9f1f759d483" />
 
-Absolutely. You want **short, interview-friendly Dockerfiles** — realistic, production-oriented, multi-stage, but **not unnecessarily complicated**.
+
 
 Here are 10 good ones to practice.
 
