@@ -1,26 +1,6 @@
 # Fluentbit
 
-```text
-Application
-    ↓
-Container stdout/stderr
-    ↓
-Kubernetes node
-    ↓
-/var/log/containers/*.log
-    ↓
-Fluent Bit DaemonSet
-    ↓
-Parse / enrich / filter
-    ↓
-Dynatrace
-    ↓
-Logs / dashboards / alerts
-```
-
-One important distinction up front:
-
-> **Fluent Bit is the log shipper/collector. Dynatrace is the observability backend.** Fluent Bit does not replace Dynatrace; it collects, processes and forwards logs to it.
+**Fluent Bit is the log shipper/collector. Dynatrace is the observability backend.** Fluent Bit does not replace Dynatrace; it collects, processes and forwards logs to it.
 
 ---
 
