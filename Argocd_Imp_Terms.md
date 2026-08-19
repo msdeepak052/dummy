@@ -1,4 +1,4 @@
-Yes. These four Argo CD concepts are tightly related, but they solve **different problems**:
+# Argo CD concepts 
 
 ```text
 Sync Policy  → HOW Argo CD reconciles
