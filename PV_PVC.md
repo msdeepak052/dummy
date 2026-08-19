@@ -1037,6 +1037,29 @@ PVC Bound
 Pod
 ```
 
+## Reclaiming
+
+When a user is done with their volume, they can delete the PVC objects from the API that allows reclamation of the resource. The reclaim policy for a PersistentVolume tells the cluster what to do with the volume after it has been released of its claim. Currently, volumes can either be Retained, Recycled, or Deleted.
+
+## Retain
+
+The Retain reclaim policy allows for manual reclamation of the resource. When the PersistentVolumeClaim is deleted, the PersistentVolume still exists and the volume is considered "released". But it is not yet available for another claim because the previous claimant's data remains on the volume. An administrator can manually reclaim the volume with the following steps.
+
+    Delete the PersistentVolume. The associated storage asset in external infrastructure still exists after the PV is deleted.
+    Manually clean up the data on the associated storage asset accordingly.
+    Manually delete the associated storage asset.
+
+If you want to reuse the same storage asset, create a new PersistentVolume with the same storage asset definition.
+## Delete
+
+For volume plugins that support the Delete reclaim policy, deletion removes both the PersistentVolume object from Kubernetes, as well as the associated storage asset in the external infrastructure. Volumes that were dynamically provisioned inherit the reclaim policy of their StorageClass, which defaults to Delete. The administrator should configure the StorageClass according to users' expectations; otherwise, the PV must be edited or patched after it is created. See Change the Reclaim Policy of a PersistentVolume.
+
+## Recycle
+>Warning:
+- The Recycle reclaim policy is deprecated. Instead, the recommended approach is to use dynamic provisioning.
+
+If supported by the underlying volume plugin, the Recycle reclaim policy performs a basic scrub (rm -rf /thevolume/*) on the volume and makes it available again for a new claim.
+
 ### Interview answer in one sentence
 
 > **PV is cluster storage, PVC is a user's request for storage, and StorageClass enables dynamic provisioning so that Kubernetes can automatically provision the underlying storage and create the corresponding PV instead of an administrator manually creating PVs.**
