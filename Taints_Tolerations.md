@@ -120,6 +120,8 @@ There are three important effects.
 
 New Pods that don't tolerate the taint **will not be scheduled**.
 
+New pods without a matching toleration cannot be scheduled onto the node, but existing running pods are unaffected
+
 ```text
 Node
  |
@@ -132,6 +134,7 @@ Existing Pods are generally not evicted just because the taint is added.
 
 ## `PreferNoSchedule`
 
+A soft version of NoSchedule; the scheduler will try to avoid placing non-tolerating pods there, but it is not guaranteed
 This is a **soft restriction**.
 
 Kubernetes tries to avoid scheduling the Pod there, but it isn't an absolute prohibition.
@@ -147,6 +150,7 @@ PreferNoSchedule
 
 ## `NoExecute`
 
+New pods without the toleration cannot be scheduled, and existing running pods without it are evicted immediately (or after a set tolerationSeconds).
 This is stronger.
 
 It affects **existing Pods as well**.
