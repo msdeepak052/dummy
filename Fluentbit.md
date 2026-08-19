@@ -1,170 +1,105 @@
-# Fluentbit
+# Fluent Bit
 
-**Fluent Bit is the log shipper/collector. Dynatrace is the observability backend.** Fluent Bit does not replace Dynatrace; it collects, processes and forwards logs to it.
+## 1. Explain Fluent Bit
 
----
+**Fluent Bit is a lightweight log collector/shipper.**
 
-# 1. What is Fluent Bit?
-
-**Fluent Bit is a lightweight, high-performance telemetry agent/collector used to collect, parse, filter, enrich and forward logs and other telemetry.**
-
-For Kubernetes, one of the most common patterns is:
-
-```text
-Fluent Bit = node-level log collector
-```
-
-You normally run it as a:
-
-```text
-DaemonSet
-```
-
-so that:
-
-```text
-1 Kubernetes node
-        ↓
-1 Fluent Bit pod
-```
-
-Architecture:
-
-```text
-                    EKS NODE
-┌─────────────────────────────────────────────┐
-│                                             │
-│   Pod A          Pod B          Pod C       │
-│     │              │              │         │
-│ stdout/stderr   stdout/stderr   stdout      │
-│     │              │              │         │
-│     └──────────────┴──────────────┘         │
-│                    │                        │
-│                    v                        │
-│          /var/log/containers/*.log          │
-│                    │                        │
-│                    v                        │
-│            Fluent Bit DaemonSet             │
-│                    │                        │
-└────────────────────┼────────────────────────┘
-                     │
-                     │ HTTPS
-                     v
-                 Dynatrace
-```
-
----
-
-# 2. Why do we need Fluent Bit?
-
-Suppose you have:
-
-```text
-EKS
- |
- +-- Node 1
- |    +-- payment-api
- |    +-- order-api
- |
- +-- Node 2
- |    +-- frontend
- |    +-- auth-api
- |
- +-- Node 3
-      +-- worker
-```
-
-Each application writes:
-
-```text
-stdout
-stderr
-```
-
-Kubernetes/container runtime stores those logs on the node.
-
-You don't want applications individually doing:
+In Kubernetes, it is commonly deployed as a **DaemonSet**, so one Fluent Bit pod runs on each node and collects logs from that node.
 
 ```text
 Application
-   |
-   +--> Dynatrace
-   |
-   +--> Elasticsearch
-   |
-   +--> Splunk
+    ↓
+stdout / stderr
+    ↓
+/var/log/containers/*.log
+    ↓
+Fluent Bit
+    ↓
+Dynatrace
 ```
+
+It mainly does:
+
+```text
+Collect → Parse → Enrich/Filter → Buffer → Forward
+```
+
+
+
+---
+
+# 2. Why is Fluent Bit used?
+
+Without Fluent Bit, every application would need its own logging integration.
 
 Instead:
 
 ```text
-Applications
-     |
-     v
-Node log files
-     |
-     v
-Fluent Bit
-     |
-     +------> Dynatrace
-     |
-     +------> Elasticsearch
-     |
-     +------> S3
+                 EKS
+      +----------+----------+
+      |          |          |
+     Pod        Pod        Pod
+      |          |          |
+      +----------+----------+
+                 |
+          Node log files
+                 |
+                 v
+           Fluent Bit
+                 |
+        +--------+--------+
+        |                 |
+    Dynatrace          S3/etc.
 ```
 
-This gives you a centralized logging pipeline.
+### Why DaemonSet?
+
+Logs are stored on the **node**, so we run one Fluent Bit per node to collect them.
+
+```text
+Node 1 → Fluent Bit
+Node 2 → Fluent Bit
+Node 3 → Fluent Bit
+```
+
+
 
 ---
 
-# 3. Fluent Bit architecture
-
-The basic Fluent Bit architecture is:
+# 3. Architecture
 
 ```text
-              +------------------+
-              |     INPUT        |
-              |                  |
-              | Tail / Systemd   |
-              | TCP / Forward    |
-              +--------+---------+
-                       |
-                       v
-              +------------------+
-              |     PARSER       |
-              |                  |
-              | JSON / Regex     |
-              +--------+---------+
-                       |
-                       v
-              +------------------+
-              |     FILTER       |
-              |                  |
-              | Kubernetes       |
-              | Modify / grep    |
-              +--------+---------+
-                       |
-                       v
-              +------------------+
-              |      BUFFER      |
-              |                  |
-              | Memory / Disk     |
-              +--------+---------+
-                       |
-                       v
-              +------------------+
-              |     OUTPUT       |
-              |                  |
-              | Dynatrace        |
-              | Elasticsearch    |
-              | S3               |
-              +------------------+
+                     EKS CLUSTER
+
+ Node 1                         Node 2
+┌──────────────────┐           ┌──────────────────┐
+│ App Pod          │           │ App Pod          │
+│ stdout/stderr    │           │ stdout/stderr    │
+└────────┬─────────┘           └────────┬─────────┘
+         ↓                              ↓
+ /var/log/containers/*.log      /var/log/containers/*.log
+         ↓                              ↓
+┌──────────────────┐           ┌──────────────────┐
+│ Fluent Bit       │           │ Fluent Bit       │
+│ DaemonSet        │           │ DaemonSet        │
+│                  │           │                  │
+│ Tail             │           │ Tail             │
+│ Parser           │           │ Parser           │
+│ K8s Filter       │           │ K8s Filter       │
+│ Buffer            │           │ Buffer            │
+└────────┬─────────┘           └────────┬─────────┘
+         │                              │
+         └──────────────┬───────────────┘
+                        ↓
+                    Dynatrace
 ```
 
-The four words you should immediately remember:
+The core Fluent Bit pipeline is:
 
 ```text
 INPUT
+  ↓
+PARSER
   ↓
 FILTER
   ↓
@@ -173,260 +108,155 @@ BUFFER
 OUTPUT
 ```
 
-Parsers are used to interpret the incoming records, while filters transform/enrich them between input and output.
+
 
 ---
 
-# 4. Major Fluent Bit components
+Yes. The important thing is to understand **what happens to one log record as it travels through Fluent Bit**. Once that is clear, `INPUT`, `PARSER`, `FILTER`, `BUFFER`, `OUTPUT`, `MULTILINE`, `GREP/Regex`, etc. become easy.
 
-| Component         | Purpose                                      |
-| ----------------- | -------------------------------------------- |
-| Input             | Where logs come from                         |
-| Parser            | Converts raw log text into structured fields |
-| Filter            | Modify/enrich/drop records                   |
-| Buffer            | Temporarily stores records                   |
-| Output            | Sends records to destination                 |
-| Service           | Global/runtime configuration                 |
-| Kubernetes filter | Adds Kubernetes metadata                     |
-| Tail input        | Reads files                                  |
-| Forward input     | Receives Fluent Forward protocol             |
-| Systemd input     | Reads systemd journal                        |
-| HTTP input        | Receives HTTP                                |
-| Multiline parser  | Handles stack traces/multiline logs          |
+# 4. Fluent Bit Configuration — Detailed but Easy
 
-For your Kubernetes use case:
+Think of Fluent Bit as a pipeline:
 
 ```text
-Tail
- ↓
-Kubernetes Filter
- ↓
-Parser
- ↓
-Multiline
- ↓
-Output
+Application
+     │
+     │ stdout/stderr
+     ▼
+┌──────────────┐
+│    INPUT     │  ← Where do I get logs?
+│     Tail     │
+└──────┬───────┘
+       ▼
+┌──────────────┐
+│    PARSER    │  ← What does this log mean?
+│  CRI / JSON  │
+└──────┬───────┘
+       ▼
+┌──────────────┐
+│    FILTER    │  ← Modify/enrich/filter
+│ Kubernetes   │
+└──────┬───────┘
+       ▼
+┌──────────────┐
+│    BUFFER    │  ← Temporarily hold
+└──────┬───────┘
+       ▼
+┌──────────────┐
+│    OUTPUT    │  ← Where should it go?
+│  Dynatrace   │
+└──────────────┘
 ```
+
+The core terms and their roles are also summarized in your source. 
 
 ---
 
-# 5. Why DaemonSet?
+# 1. `[SERVICE]`
 
-This is an important Kubernetes interview question.
+`SERVICE` contains **global settings for Fluent Bit itself**.
 
-Suppose:
-
-```text
-Node 1 → 50 Pods
-Node 2 → 70 Pods
-Node 3 → 40 Pods
+```ini
+[SERVICE]
+    Flush        5
+    Log_Level    info
 ```
 
-You want one Fluent Bit per node:
+It does **not** define where logs come from or where they go.
 
-```text
-Node 1                    Node 2                    Node 3
-+----------------+        +----------------+        +----------------+
-| Pods            |        | Pods            |        | Pods            |
-|                |        |                |        |                |
-| Fluent Bit     |        | Fluent Bit     |        | Fluent Bit     |
-+-------+--------+        +-------+--------+        +-------+--------+
-        |                         |                         |
-        +-------------------------+-------------------------+
-                                  |
-                                  v
-                              Dynatrace
+Think:
+
+> "How should Fluent Bit itself operate?"
+
+---
+
+## `Flush 5`
+
+```ini
+Flush 5
 ```
 
-Why?
+Means Fluent Bit attempts to flush/process pending records every **5 seconds**.
 
-Because the log files are local to the node.
-
-If Fluent Bit were just one Deployment:
+Conceptually:
 
 ```text
+Logs arrive
+   ↓
 Fluent Bit
-    |
-    X
-Node 1 logs
-Node 2 logs
-Node 3 logs
+   ↓
+every 5 sec
+   ↓
+send pending records
 ```
 
-it wouldn't naturally have access to all node-local log files.
+If you make it very small:
 
-A DaemonSet ensures:
+```text
+Flush 1
+```
 
-> **Every node gets a log collector.**
+you can get more frequent sending, but potentially more overhead.
+
+If you make it larger:
+
+```text
+Flush 30
+```
+
+logs may wait longer before being sent.
+
+For an interview:
+
+> **Flush controls the interval at which Fluent Bit flushes data to outputs.**
 
 ---
 
-# 6. Kubernetes pod logging flow
+## `Log_Level`
 
-This is critical.
-
-Application:
-
-```text
-Python / Java / Go / Node
-           |
-           |
-      stdout/stderr
-           |
-           v
-    Container runtime
-           |
-           v
-Kubernetes node filesystem
+```ini
+Log_Level info
 ```
 
-Typically you'll see:
+Controls **Fluent Bit's own logs**, not your application's logs.
+
+Typical levels:
 
 ```text
-/var/log/containers/
+error
+warn
+info
+debug
+trace
 ```
 
-which contains links to container log files.
+For example:
 
-You may also encounter:
+```ini
+Log_Level debug
+```
+
+is useful while troubleshooting.
+
+You might see:
 
 ```text
-/var/log/pods/
+[debug] [input:tail:tail.0]
+[debug] [filter:kubernetes]
+[debug] [output:http]
 ```
 
-The exact runtime/file layout matters, but the key interview concept is:
-
-> Fluent Bit tails node-local container log files rather than reading application internals directly.
+But you normally don't want excessive debug logging permanently.
 
 ---
 
-# 7. Example application log
+# 2. `[INPUT]`
 
-Suppose:
+This answers:
 
-```text
-payment-api
-```
+> **Where should Fluent Bit collect logs from?**
 
-prints:
-
-```json
-{"timestamp":"2026-08-19T10:30:15Z","level":"INFO","message":"Payment successful","order_id":"ORD-1001"}
-```
-
-Fluent Bit reads it.
-
-Initially:
-
-```text
-raw log
-```
-
-Then parser:
-
-```text
-timestamp
-level
-message
-order_id
-```
-
-Then Kubernetes filter adds:
-
-```text
-namespace
-pod_name
-container_name
-container_id
-labels
-```
-
-Then:
-
-```text
-Fluent Bit
-       |
-       v
-Dynatrace
-```
-
----
-
-# 8. What does Fluent Bit actually see?
-
-Suppose the raw container log is:
-
-```text
-2026-08-19T10:30:15.123456789Z stdout F {"level":"INFO","message":"Payment successful"}
-```
-
-The important pieces are:
-
-```text
-timestamp
-stdout
-F
-application payload
-```
-
-Fluent Bit can parse the container runtime format and then process the application payload.
-
----
-
-# 9. Kubernetes metadata enrichment
-
-This is one of Fluent Bit's biggest advantages in Kubernetes.
-
-Suppose application says:
-
-```json
-{
-  "level":"ERROR",
-  "message":"Payment failed"
-}
-```
-
-Fluent Bit can enrich it with:
-
-```text
-namespace = payment
-pod_name = payment-api-7d6c9
-container_name = payment
-node_name = ip-10-0-1-25
-labels.app = payment-api
-```
-
-So Dynatrace can show:
-
-```text
-Payment failed
-
-namespace:
-payment
-
-pod:
-payment-api-7d6c9
-
-container:
-payment
-
-node:
-ip-10-0-1-25
-```
-
-This is extremely useful for troubleshooting.
-
----
-
-# 10. Fluent Bit input
-
-The most important input for Kubernetes pod logs:
-
-```text
-tail
-```
-
-Example:
+For Kubernetes:
 
 ```ini
 [INPUT]
@@ -438,129 +268,254 @@ Example:
     Skip_Long_Lines   On
 ```
 
-Meaning:
+The source specifically uses `tail` for Kubernetes container log files. 
+
+---
+
+# 3. `Name tail`
+
+```ini
+Name tail
+```
+
+`tail` means:
+
+> Read and continuously follow a file.
+
+Similar to:
+
+```bash
+tail -f application.log
+```
+
+For example:
 
 ```text
-Name
- ↓
-tail files
+application writes:
+ERROR payment failed
+```
 
-Path
- ↓
-container log files
+Fluent Bit is continuously watching the file and picks up the new line.
 
-Parser
- ↓
-interpret container log format
+---
 
-Tag
- ↓
-identify records
+# 4. `Path`
+
+```ini
+Path /var/log/containers/*.log
+```
+
+This tells Fluent Bit **which files to read**.
+
+`*` means:
+
+> Match multiple files.
+
+So:
+
+```text
+/var/log/containers/*.log
+```
+
+could match:
+
+```text
+payment-api-xxx.log
+order-api-xxx.log
+frontend-xxx.log
+auth-api-xxx.log
+```
+
+Architecture:
+
+```text
+Node
+│
+├── /var/log/containers/
+│      ├── payment-api.log
+│      ├── order-api.log
+│      └── frontend.log
+│
+└── Fluent Bit
+       │
+       └── Tail reads these files
 ```
 
 ---
 
-# 11. What is a Tag?
+# 5. `Parser cri`
 
-You might see:
+```ini
+Parser cri
+```
+
+This is extremely important in Kubernetes.
+
+The container runtime can produce something like:
+
+```text
+2026-08-19T10:30:15.123Z stdout F {"level":"INFO","message":"Payment successful"}
+```
+
+That's not simply:
+
+```json
+{"level":"INFO"}
+```
+
+There is container-runtime information around the application log.
+
+The `cri` parser understands the **Container Runtime Interface log format**.
+
+Conceptually:
+
+```text
+Raw container log
+       ↓
+CRI Parser
+       ↓
+timestamp
+stream = stdout
+flag
+actual log message
+```
+
+Then Fluent Bit can process the actual application payload.
+
+---
+
+# 6. `Tag`
 
 ```ini
 Tag kube.*
 ```
 
-Think of a tag as an internal routing/classification identifier.
+A **tag is an internal label used for routing records through Fluent Bit**.
 
-Example:
-
-```text
-kube.var.log.containers.payment-api-xxx.log
-```
-
-Then filters/output can use:
+Think:
 
 ```text
-kube.*
+Record
+  |
+  +-- Tag = kube.xxx
 ```
 
-to process Kubernetes logs.
-
----
-
-# 12. Kubernetes filter
-
-Example:
+Then:
 
 ```ini
-[FILTER]
-    Name                kubernetes
-    Match               kube.*
-    Merge_Log           On
-    Keep_Log            Off
-    K8S-Logging.Parser  On
-    K8S-Logging.Exclude On
+Match kube.*
 ```
 
-This filter:
+means:
+
+> Process records whose tag matches `kube.*`.
+
+For example:
 
 ```text
-Fluent Bit
-    |
-    | pod log
-    v
-Kubernetes filter
-    |
-    +--> namespace
-    +--> pod
-    +--> container
-    +--> labels
-    +--> annotations
+INPUT
+Tag = kube.*
+       ↓
+FILTER
+Match = kube.*
+       ↓
+OUTPUT
+Match = kube.*
 ```
+
+So the same Kubernetes logs travel through the pipeline.
+
+Your source describes tags as an internal routing/classification identifier. 
 
 ---
 
-# 13. `Merge_Log`
+# 7. `Mem_Buf_Limit`
 
-Suppose application writes:
+```ini
+Mem_Buf_Limit 50MB
+```
+
+This controls how much **memory buffering** the input can use.
+
+Imagine:
+
+```text
+Application
+  ↓
+Fluent Bit
+  ↓
+Dynatrace is slow
+```
+
+Logs start accumulating.
+
+```text
+Log
+Log
+Log
+Log
+Log
+ ↓
+Memory buffer
+```
+
+You don't want Fluent Bit to consume unlimited RAM.
+
+So:
+
+```ini
+Mem_Buf_Limit 50MB
+```
+
+puts a limit on that memory buffer.
+
+---
+
+# 8. `Skip_Long_Lines`
+
+```ini
+Skip_Long_Lines On
+```
+
+Suppose an application produces an extremely large log line:
+
+```text
+10 MB single log line
+```
+
+Instead of allowing a huge line to cause problems, Fluent Bit can skip lines that exceed the configured limits.
+
+For interviews:
+
+> **Skip_Long_Lines prevents oversized log lines from causing input processing problems.**
+
+---
+
+# 9. `[PARSER]`
+
+Parser answers:
+
+> **How do I interpret the raw log?**
+
+Example JSON:
 
 ```json
-{"level":"ERROR","message":"Database connection failed"}
+{
+  "timestamp": "2026-08-19T10:30:00Z",
+  "level": "ERROR",
+  "message": "Database failed"
+}
 ```
 
-Without appropriate processing, the entire JSON may remain as one field:
+A JSON parser can turn this into structured fields:
 
 ```text
-log = '{"level":"ERROR","message":"Database connection failed"}'
+timestamp = ...
+level     = ERROR
+message   = Database failed
 ```
 
-With:
-
-```ini
-Merge_Log On
-```
-
-Fluent Bit can merge parsed JSON fields into the record.
-
-Conceptually:
-
-```text
-Before:
-
-log = JSON string
-
-
-After:
-
-level   = ERROR
-message = Database connection failed
-```
-
----
-
-# 14. Parser
-
-Suppose application emits JSON.
-
-You can use JSON parsing:
+Example:
 
 ```ini
 [PARSER]
@@ -570,33 +525,228 @@ You can use JSON parsing:
     Time_Format %Y-%m-%dT%H:%M:%SZ
 ```
 
-Now:
+Your source describes parsers as converting raw log text into structured fields. 
+
+---
+
+# 10. CRI Parser vs JSON Parser
+
+This confuses people.
+
+They can be used for **different layers**.
+
+Suppose the actual file contains:
 
 ```text
-raw string
-   ↓
-JSON parser
-   ↓
-structured record
+2026-08-19T10:30:00Z stdout F {"level":"ERROR","message":"DB failed"}
+```
+
+First:
+
+```text
+CRI parser
+     ↓
+{"level":"ERROR","message":"DB failed"}
+```
+
+Then the application payload can be parsed as JSON.
+
+Conceptually:
+
+```text
+Container log
+     ↓
+CRI Parser
+     ↓
+Application JSON
+     ↓
+JSON Parser
+     ↓
+Structured fields
 ```
 
 ---
 
-# 15. Filter
+# 11. `[FILTER]`
+
+Filter answers:
+
+> **Now that I have the record, what should I do with it?**
 
 Filters can:
 
 ```text
 add fields
 remove fields
-rename fields
 modify fields
+rename fields
 drop records
-grep records
-parse fields
+enrich records
 ```
 
+Your source lists these filter capabilities. 
+
+---
+
+# 12. Kubernetes Filter
+
 Example:
+
+```ini
+[FILTER]
+    Name       kubernetes
+    Match      kube.*
+    Merge_Log  On
+    Keep_Log   Off
+```
+
+This is very important for Kubernetes.
+
+Suppose application sends:
+
+```json
+{
+  "level": "ERROR",
+  "message": "Payment failed"
+}
+```
+
+Fluent Bit can enrich it with Kubernetes information:
+
+```text
+namespace = payment
+pod        = payment-api-abc
+container  = payment
+labels     = app=payment
+```
+
+So the record becomes conceptually:
+
+```json
+{
+  "level": "ERROR",
+  "message": "Payment failed",
+
+  "kubernetes": {
+    "namespace": "payment",
+    "pod": "payment-api-abc",
+    "container": "payment"
+  }
+}
+```
+
+---
+
+# 13. `Merge_Log On`
+
+Suppose the application sends:
+
+```json
+{"level":"ERROR","message":"Database failed"}
+```
+
+Without merging, you might effectively have:
+
+```text
+log = '{"level":"ERROR","message":"Database failed"}'
+```
+
+With:
+
+```ini
+Merge_Log On
+```
+
+the JSON fields can be merged into the record:
+
+```text
+level   = ERROR
+message = Database failed
+```
+
+Your source demonstrates this exact conceptual difference. 
+
+---
+
+# 14. `Keep_Log Off`
+
+```ini
+Keep_Log Off
+```
+
+If Fluent Bit successfully extracts the JSON fields from the original `log` field, this tells it not to unnecessarily keep the original log field.
+
+Conceptually:
+
+### Before
+
+```text
+log = '{"level":"ERROR","message":"DB failed"}'
+```
+
+### After
+
+```text
+level = ERROR
+message = DB failed
+```
+
+This avoids duplicate data.
+
+---
+
+# 15. `GREP` / Regex Filter
+
+This is one of the other important settings you mentioned.
+
+Suppose logs are:
+
+```text
+INFO Payment successful
+WARN Payment retry
+ERROR Database failed
+```
+
+You only want ERROR logs.
+
+You can use a grep filter:
+
+```ini
+[FILTER]
+    Name   grep
+    Match  kube.*
+    Regex  level ERROR
+```
+
+Conceptually:
+
+```text
+INFO
+ ↓
+DROP
+
+WARN
+ ↓
+DROP
+
+ERROR
+ ↓
+KEEP
+```
+
+Your source gives the same pattern. 
+
+### But be careful
+
+In production, don't blindly filter logs just to reduce volume.
+
+You might accidentally remove information needed during troubleshooting.
+
+---
+
+# 16. `Modify` Filter
+
+Another common filter:
 
 ```ini
 [FILTER]
@@ -605,252 +755,486 @@ Example:
     Add    environment production
 ```
 
-Now:
+Now every matching record gets:
 
 ```text
 environment=production
 ```
 
-is added.
+Useful for adding:
+
+```text
+environment
+team
+region
+application
+cluster
+```
+
+Your source shows this pattern. 
 
 ---
 
-# 16. Grep filter
+# 17. MULTILINE
 
-Suppose you only want ERROR logs.
+This is **very important** for Java/Python/.NET stack traces.
 
-```ini
-[FILTER]
-    Name    grep
-    Match   kube.*
-    Regex   level ERROR
-```
-
-Flow:
+Suppose Java produces:
 
 ```text
-INFO
- ↓
-X dropped
-
-WARN
- ↓
-X dropped
-
-ERROR
- ↓
-✓ forwarded
+Exception: Database connection failed
+    at PaymentService.process(PaymentService.java:50)
+    at PaymentService.handle(PaymentService.java:30)
+    at Controller.handle(Controller.java:20)
 ```
 
-Be careful with this in production—you normally want to preserve useful logs rather than accidentally filtering away evidence.
-
----
-
-# 17. Multiline logs
-
-Very important for Java.
-
-Application:
+Without multiline:
 
 ```text
-Exception in thread "main" java.lang.Exception
-    at com.example.PaymentService.process(PaymentService.java:45)
-    at com.example.PaymentService.handle(PaymentService.java:22)
-    at ...
-```
-
-If Fluent Bit treats every line independently:
-
-```text
-Record 1
-Exception...
-
-Record 2
-at...
-
-Record 3
-at...
+Log 1 → Exception...
+Log 2 → at PaymentService...
+Log 3 → at PaymentService...
+Log 4 → at Controller...
 ```
 
 That's bad.
 
-Multiline processing combines them:
+With multiline:
 
 ```text
-One log event
-    |
-    +-- Exception
-    +-- at ...
-    +-- at ...
+             ONE LOG EVENT
+                  │
+        ┌─────────┴─────────┐
+        │                   │
+ Exception               stack trace
+                           │
+                 ├── at PaymentService
+                 ├── at PaymentService
+                 └── at Controller
 ```
 
-This is particularly important for:
+Fluent Bit's multiline processing combines related lines into a single event. 
+
+### Typical use cases
 
 ```text
-Java
-Python
+Java exceptions
+Python tracebacks
 Go panic
 .NET stack traces
 ```
 
 ---
 
-# 18. Buffering
+# 18. BUFFER
 
-What happens if Dynatrace is temporarily unavailable?
+Buffer answers:
 
-You don't want:
+> **What do I do with logs when the destination can't keep up?**
 
-```text
-Application
-    ↓
-Fluent Bit
-    ↓
-Dynatrace X
-    ↓
-LOG LOST
-```
-
-Buffering helps:
+Normal:
 
 ```text
 Application
     ↓
 Fluent Bit
     ↓
-Buffer
+Dynatrace
+```
+
+Dynatrace becomes unavailable:
+
+```text
+Application
     ↓
-Dynatrace X
-
-          later
-
-Dynatrace available
+Fluent Bit
     ↓
-Buffered logs sent
+BUFFER
+    ↓
+Dynatrace ❌
 ```
 
-Fluent Bit supports memory and filesystem buffering mechanisms; filesystem buffering is particularly useful when you need logs to survive pressure/restarts more robustly than memory-only buffering.
+Later:
+
+```text
+Dynatrace becomes available
+          ↓
+      BUFFER
+          ↓
+      Dynatrace
+```
+
+Fluent Bit supports memory and filesystem buffering. 
 
 ---
 
-# 19. Backpressure
+# 19. Memory vs Filesystem Buffer
 
-Senior-level question:
-
-> "What happens if Dynatrace becomes slow?"
-
-Suppose:
+### Memory
 
 ```text
-Incoming:
-10,000 logs/sec
-
-Dynatrace:
-2,000 logs/sec
-```
-
-Now:
-
-```text
-10,000 in
-   ↓
 Fluent Bit
-   ↓
-Buffer grows
-   ↓
-2,000 out
+    ↓
+RAM
+    ↓
+Dynatrace
 ```
 
-If the buffer fills, you need a policy.
+Fast, but if the Fluent Bit process/node fails, buffered data can be lost.
 
-Possible outcomes depend on configuration:
+### Filesystem
 
 ```text
-buffer growth
-     ↓
-retry
-     ↓
-filesystem buffering
-     ↓
-eventual delivery
+Fluent Bit
+    ↓
+Disk
+    ↓
+Dynatrace
 ```
 
-Eventually, if the destination remains unavailable and storage is exhausted, logs can be dropped.
+More resilient for temporary outages/restarts, assuming sufficient disk capacity.
 
-This is why production logging needs capacity planning.
+For production, filesystem buffering is often considered when you need stronger durability.
 
 ---
 
-# 20. Fluent Bit → Dynatrace
+# 20. `[OUTPUT]`
 
-Now your actual target.
+Output answers:
 
-There are two important architectural approaches you may encounter:
+> **Where should Fluent Bit send the logs?**
 
-### Approach A — Fluent Bit sends through Dynatrace's supported log ingestion endpoint
+Example:
 
-```text
-Fluent Bit
-    |
-    | HTTPS
-    v
-Dynatrace Log Ingest API
-    |
-    v
-Dynatrace
+```ini
+[OUTPUT]
+    Name    http
+    Match   kube.*
+    Host    <dynatrace-endpoint>
+    Port    443
+    URI     <log-ingest-path>
+    Format  json
+    tls     On
 ```
-
-### Approach B — Use an intermediate collector/observability gateway
-
-```text
-Fluent Bit
-    |
-    v
-Collector/Gateway
-    |
-    v
-Dynatrace
-```
-
-Which one you use depends on your Dynatrace architecture and organization standards.
-
-For your interview, understand **direct log ingestion first**.
 
 ---
 
-# 21. Dynatrace authentication
+## `Name`
 
-Your Fluent Bit needs credentials.
+```ini
+Name http
+```
 
-Conceptually:
+Use the HTTP output plugin.
+
+Other destinations/plugins can include systems such as:
+
+```text
+Elasticsearch
+S3
+Kafka
+HTTP endpoints
+```
+
+depending on the supported Fluent Bit output.
+
+---
+
+## `Match`
+
+```ini
+Match kube.*
+```
+
+Only records with matching tags are sent.
+
+Remember:
+
+```text
+INPUT:
+Tag kube.*
+
+        ↓
+
+FILTER:
+Match kube.*
+
+        ↓
+
+OUTPUT:
+Match kube.*
+```
+
+---
+
+## `Host`
+
+```ini
+Host <dynatrace-endpoint>
+```
+
+Destination hostname.
+
+---
+
+## `Port`
+
+```ini
+Port 443
+```
+
+HTTPS:
+
+```text
+443
+```
+
+---
+
+## `URI`
+
+```ini
+URI <log-ingest-path>
+```
+
+The API path where logs are submitted.
+
+The exact Dynatrace endpoint depends on the ingestion method you're using.
+
+---
+
+## `Format`
+
+```ini
+Format json
+```
+
+Send records as JSON.
+
+---
+
+## `tls On`
+
+```ini
+tls On
+```
+
+Enables TLS encryption.
+
+So:
 
 ```text
 Fluent Bit
-    |
-    | Authorization
-    v
+     |
+     | HTTPS/TLS
+     v
 Dynatrace
 ```
 
-You should **not** hardcode tokens into:
+---
 
-```text
-fluent-bit.conf
+# 21. Authentication
+
+Don't do:
+
+```ini
+Header Authorization Bearer my-real-token
 ```
+
+inside Git.
 
 Instead:
 
 ```text
 Kubernetes Secret
-       |
-       v
+       ↓
 Fluent Bit
-       |
-       v
+       ↓
 Dynatrace
 ```
 
-Example:
+For example:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dynatrace-token
+type: Opaque
+stringData:
+  DT_API_TOKEN: "REPLACE_ME"
+```
+
+Then inject the secret into the Fluent Bit pod.
+
+Your source specifically recommends Secret/centralized secret management instead of hardcoding tokens. 
+
+---
+
+# 22. Putting everything together
+
+Now the entire configuration makes sense:
+
+```text
+[SERVICE]
+    ↓
+How Fluent Bit behaves
+
+[INPUT]
+    ↓
+Where logs come from
+    ↓
+Tail /var/log/containers/*.log
+
+[PARSER]
+    ↓
+Understand log format
+    ↓
+CRI / JSON
+
+[FILTER]
+    ↓
+Modify/enrich/filter
+    ↓
+Kubernetes metadata
+    ↓
+Merge JSON
+    ↓
+Grep / Regex
+    ↓
+Modify
+
+[MULTILINE]
+    ↓
+Combine stack traces
+
+[BUFFER]
+    ↓
+Hold logs during destination problems
+
+[OUTPUT]
+    ↓
+Where logs go
+    ↓
+Dynatrace
+```
+
+---
+
+# 23. The settings you should know for interviews
+
+Don't try to memorize every Fluent Bit option. Know these:
+
+| Area           | Important settings/concepts                                         |
+| -------------- | ------------------------------------------------------------------- |
+| **SERVICE**    | `Flush`, `Log_Level`                                                |
+| **INPUT**      | `Name`, `Path`, `Parser`, `Tag`, `Mem_Buf_Limit`, `Skip_Long_Lines` |
+| **PARSER**     | JSON, CRI, Regex, time parsing                                      |
+| **FILTER**     | Kubernetes, Modify, Grep                                            |
+| **Kubernetes** | `Match`, `Merge_Log`, `Keep_Log`                                    |
+| **MULTILINE**  | Stack traces                                                        |
+| **BUFFER**     | Memory vs filesystem, retry/backpressure                            |
+| **OUTPUT**     | `Name`, `Match`, `Host`, `Port`, `URI`, `Format`, TLS               |
+| **Security**   | Secrets, TLS, don't hardcode tokens                                 |
+
+---
+
+# 24. One example to remember
+
+Suppose your Java application produces:
+
+```text
+ERROR Database failed
+    at PaymentService.java:50
+    at Controller.java:20
+```
+
+Fluent Bit does:
+
+```text
+1. INPUT
+   Tail
+   ↓
+2. PARSER
+   CRI
+   ↓
+3. MULTILINE
+   Combine 3 lines → 1 event
+   ↓
+4. FILTER
+   Kubernetes metadata
+   ↓
+5. FILTER
+   JSON / Modify / Regex if required
+   ↓
+6. BUFFER
+   Hold temporarily
+   ↓
+7. OUTPUT
+   HTTPS → Dynatrace
+```
+
+That's the **core Fluent Bit pipeline** you should have in your head.
+
+---
+
+# 5. Full demo — End to End
+
+We'll create:
+
+```text
+logging namespace
+ ├── Secret
+ ├── ConfigMap
+ └── Fluent Bit DaemonSet
+
+demo namespace
+ └── Application
+```
+
+Flow:
+
+```text
+Demo App
+   ↓
+stdout
+   ↓
+Container runtime
+   ↓
+/var/log/containers/*.log
+   ↓
+Fluent Bit
+   ↓
+Tail → CRI Parser → K8s Filter → Buffer
+   ↓
+Dynatrace
+```
+
+
+
+---
+
+## Step 1 — Namespaces
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+```
+
+```bash
+kubectl apply -f namespaces.yaml
+```
+
+---
+
+## Step 2 — Dynatrace Secret
 
 ```yaml
 apiVersion: v1
@@ -860,359 +1244,231 @@ metadata:
   namespace: logging
 type: Opaque
 stringData:
-  DT_API_TOKEN: "REPLACE_ME"
+  DT_API_TOKEN: "REPLACE_WITH_REAL_TOKEN"
 ```
 
-In real production:
+**Never commit the real token to Git.**
 
-> Prefer your organization's secret-management solution rather than committing this manifest to Git with an actual token.
+In production, use your organization's secret-management solution. 
 
 ---
 
-# 22. End-to-end architecture
+## Step 3 — Fluent Bit ConfigMap
 
-Here's the architecture you should be able to draw in an interview:
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: logging
+data:
+
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush        5
+        Log_Level    info
+
+    [INPUT]
+        Name              tail
+        Path              /var/log/containers/*.log
+        Parser            cri
+        Tag               kube.*
+        Mem_Buf_Limit     50MB
+        Skip_Long_Lines   On
+
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Merge_Log           On
+        Keep_Log            Off
+
+    [OUTPUT]
+        Name        http
+        Match       kube.*
+        Host        <dynatrace-endpoint>
+        Port        443
+        URI         <log-ingest-path>
+        Format      json
+        tls         On
+
+  parsers.conf: |
+    [PARSER]
+        Name        app_json
+        Format      json
+```
+
+The important part to understand for the interview is:
 
 ```text
-                         EKS CLUSTER
-┌────────────────────────────────────────────────────────────┐
-│                                                            │
-│   NODE 1                     NODE 2                        │
-│                                                            │
-│ ┌──────────────┐          ┌──────────────┐                │
-│ │ payment-api  │          │ order-api    │                │
-│ │ stdout/stderr│          │ stdout/stderr│                │
-│ └──────┬───────┘          └──────┬───────┘                │
-│        │                         │                         │
-│        v                         v                         │
-│ /var/log/containers/*.log      /var/log/containers/*.log │
-│        │                         │                         │
-│        v                         v                         │
-│ ┌──────────────┐          ┌──────────────┐                │
-│ │ Fluent Bit  │          │ Fluent Bit  │                │
-│ │ DaemonSet   │          │ DaemonSet   │                │
-│ │             │          │             │                │
-│ │ Tail        │          │ Tail        │                │
-│ │ Parser      │          │ Parser      │                │
-│ │ K8s Filter  │          │ K8s Filter  │                │
-│ │ Buffer      │          │ Buffer      │                │
-│ └──────┬───────┘          └──────┬───────┘                │
-│        │                         │                         │
-└────────┼─────────────────────────┼─────────────────────────┘
-         │                         │
-         └────────────┬────────────┘
-                      │ HTTPS
-                      v
-             ┌───────────────────┐
-             │     Dynatrace     │
-             │                   │
-             │ Logs              │
-             │ Search            │
-             │ Dashboards        │
-             │ Alerts            │
-             └───────────────────┘
+Tail
+ ↓
+reads /var/log/containers/*.log
+
+CRI
+ ↓
+understands Kubernetes container log format
+
+Kubernetes filter
+ ↓
+adds pod/namespace/container metadata
+
+HTTP output
+ ↓
+sends logs to Dynatrace
 ```
+
+The exact Dynatrace endpoint/output configuration depends on the ingestion method used in your environment. 
 
 ---
 
-# 23. Complete demo architecture
+## Step 4 — Fluent Bit DaemonSet
 
-We'll build:
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: logging
 
-```text
-Namespace: logging
-        |
-        +-- Fluent Bit
-        |
-        +-- Secret
+spec:
+  selector:
+    matchLabels:
+      app: fluent-bit
 
-Namespace: demo
-        |
-        +-- Application
-        +-- Service
+  template:
+    metadata:
+      labels:
+        app: fluent-bit
+
+    spec:
+
+      serviceAccountName: fluent-bit
+
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:latest
+
+          volumeMounts:
+
+            - name: varlog
+              mountPath: /var/log
+
+            - name: config
+              mountPath: /fluent-bit/etc
+
+      volumes:
+
+        - name: varlog
+          hostPath:
+            path: /var/log
+
+        - name: config
+          configMap:
+            name: fluent-bit-config
+```
+
+The important piece is:
+
+```yaml
+- name: varlog
+  hostPath:
+    path: /var/log
+```
+
+This gives Fluent Bit access to the node's log files. 
+
+---
+
+## Step 5 — RBAC
+
+Fluent Bit needs permission to query Kubernetes metadata.
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluent-bit
+  namespace: logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluent-bit
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluent-bit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluent-bit
+subjects:
+  - kind: ServiceAccount
+    name: fluent-bit
+    namespace: logging
 ```
 
 Flow:
 
 ```text
-demo-app
-   |
-   | stdout
-   v
-container log
-   |
-   v
 Fluent Bit
-   |
-   +--> Tail
-   |
-   +--> CRI parser
-   |
-   +--> Kubernetes metadata
-   |
-   +--> JSON parsing
-   |
-   +--> Buffer
-   |
-   +--> Dynatrace output
-   |
-   v
-Dynatrace
+    ↓
+ServiceAccount
+    ↓
+RBAC
+    ↓
+Kubernetes API
+    ↓
+Pod metadata
 ```
+
+
 
 ---
 
-# 24. Install Fluent Bit
-
-For Kubernetes, use the official Fluent Bit Helm chart rather than manually creating every DaemonSet object.
-
-Conceptually:
+## Step 6 — Deploy Fluent Bit
 
 ```bash
-helm repo add fluent https://fluent.github.io/helm-charts
-helm repo update
+kubectl apply -f rbac.yaml
+kubectl apply -f fluent-bit-config.yaml
+kubectl apply -f fluent-bit-daemonset.yaml
 ```
 
-Create:
-
-```bash
-kubectl create namespace logging
-```
-
-Then install:
-
-```bash
-helm upgrade --install fluent-bit \
-  fluent/fluent-bit \
-  -n logging
-```
-
-The exact chart values should be pinned/managed through your organization's GitOps process in production.
-
----
-
-# 25. Verify DaemonSet
-
-```bash
-kubectl get daemonset -n logging
-```
-
-You want:
-
-```text
-DESIRED
-CURRENT
-READY
-```
-
-to correspond to your node count.
-
-For example:
-
-```text
-DESIRED   CURRENT   READY
-3         3         3
-```
-
-Then:
+Check:
 
 ```bash
 kubectl get pods -n logging -o wide
 ```
 
-You should see one Fluent Bit pod per node.
-
----
-
-# 26. Mount node log directories
-
-This is essential.
-
-Fluent Bit needs access to:
+If you have:
 
 ```text
-/var/log/containers
-/var/log/pods
+3 nodes
 ```
 
-The DaemonSet uses hostPath mounts conceptually like:
-
-```yaml
-volumeMounts:
-  - name: varlog
-    mountPath: /var/log
-
-volumes:
-  - name: varlog
-    hostPath:
-      path: /var/log
-```
-
-This is how:
+you should see approximately:
 
 ```text
-Node filesystem
-       |
-       | hostPath
-       v
-Fluent Bit container
+fluent-bit-xxxxx   Running   node1
+fluent-bit-yyyyy   Running   node2
+fluent-bit-zzzzz   Running   node3
 ```
 
-gets access to logs.
+Because it is a **DaemonSet**.
 
 ---
 
-# 27. RBAC
-
-The Kubernetes filter needs Kubernetes metadata.
-
-So Fluent Bit generally requires permissions to query relevant Kubernetes API objects.
-
-Conceptually:
-
-```text
-Fluent Bit ServiceAccount
-       |
-       v
-Role/ClusterRole
-       |
-       v
-Kubernetes API
-       |
-       v
-Pod metadata
-```
-
-Typical permissions involve resources such as:
-
-```text
-pods
-namespaces
-```
-
-and potentially related resources depending on configuration.
-
----
-
-# 28. Basic Fluent Bit config
-
-Conceptually:
-
-```ini
-[SERVICE]
-    Flush        5
-    Log_Level    info
-
-[INPUT]
-    Name         tail
-    Path         /var/log/containers/*.log
-    Parser       cri
-    Tag          kube.*
-    Mem_Buf_Limit 50MB
-    Skip_Long_Lines On
-
-[FILTER]
-    Name         kubernetes
-    Match        kube.*
-    Merge_Log    On
-    Keep_Log     Off
-
-[OUTPUT]
-    Name         <Dynatrace output>
-    Match        kube.*
-    ...
-```
-
-The exact Dynatrace output/plugin configuration depends on the Dynatrace ingestion method and the Fluent Bit plugin/output supported by your environment.
-
----
-
-# 29. Why I don't want you memorizing a fake Dynatrace output block
-
-This is important for an interview.
-
-Dynatrace ingestion endpoints, authentication, and supported Fluent Bit integration options can vary by Dynatrace deployment/version and organization architecture.
-
-So don't memorize something like:
-
-```ini
-[OUTPUT]
-Name dynatrace
-...
-```
-
-unless you have verified that **your organization's actual Fluent Bit integration uses that output plugin**.
-
-The architecture is stable:
-
-```text
-Fluent Bit
-   |
-   | HTTPS + token
-   v
-Dynatrace ingestion
-```
-
-but the exact configuration should be taken from the current Dynatrace integration documentation/environment.
-
----
-
-# 30. A generic HTTP output example
-
-If your chosen Dynatrace ingestion path is HTTP-compatible, the conceptual configuration is:
-
-```ini
-[OUTPUT]
-    Name        http
-    Match       kube.*
-    Host        <dynatrace-endpoint>
-    Port        443
-    URI         <log-ingest-path>
-    Format      json
-    tls         On
-
-    Header      Authorization Bearer <token>
-```
-
-**Don't put a real token directly in this config.**
-
-Use environment variables / secret injection or the supported Helm Secret mechanism.
-
----
-
-# 31. Secret-based authentication
-
-Conceptually:
-
-```text
-Kubernetes Secret
-       |
-       v
-Fluent Bit Pod
-       |
-       | environment / mounted secret
-       v
-Dynatrace output
-```
-
-Example:
-
-```yaml
-env:
-  - name: DT_API_TOKEN
-    valueFrom:
-      secretKeyRef:
-        name: dynatrace-logs
-        key: DT_API_TOKEN
-```
-
-Then your configuration references the injected credential using the mechanism supported by your output plugin/chart.
-
----
-
-# 32. Application demo
-
-Let's create an application that emits JSON logs.
+## Step 7 — Create demo application
 
 ```yaml
 apiVersion: apps/v1
@@ -1250,103 +1506,65 @@ spec:
               done
 ```
 
-Create namespace:
-
-```bash
-kubectl create namespace demo
-```
-
-Apply:
-
 ```bash
 kubectl apply -f app.yaml
 ```
 
 ---
 
-# 33. Check application logs
+## Step 8 — Verify application logs
+
+```bash
+kubectl get pods -n demo
+```
+
+Then:
 
 ```bash
 kubectl logs -n demo deployment/log-demo
 ```
 
-You'll see:
+You should see:
 
-```text
+```json
 {"level":"INFO","message":"Payment processed","request_id":"req-0","service":"payment-api"}
 {"level":"INFO","message":"Payment processed","request_id":"req-1","service":"payment-api"}
 ```
 
-The application knows nothing about Fluent Bit.
+The application simply writes to **stdout**; it doesn't know anything about Fluent Bit. 
 
-That's important.
+---
+
+## Step 9 — What happens internally?
 
 ```text
 Application
-    |
-    | stdout
-    X
-No logging SDK required
-```
-
----
-
-# 34. What happens next?
-
-Container runtime writes:
-
-```text
-/var/log/containers/log-demo-....log
-```
-
-Fluent Bit sees:
-
-```text
-new line
-   |
-   v
-Tail input
-```
-
-Then:
-
-```text
-CRI parser
-```
-
-Then:
-
-```text
-Kubernetes filter
-```
-
-Then:
-
-```text
-JSON parsing
-```
-
-Then:
-
-```text
-buffer
-```
-
-Then:
-
-```text
+    ↓
+stdout
+    ↓
+Container runtime
+    ↓
+/var/log/containers/*.log
+    ↓
+Fluent Bit Tail
+    ↓
+CRI Parser
+    ↓
+Kubernetes Filter
+    ↓
+JSON processing
+    ↓
+Buffer
+    ↓
 Dynatrace
 ```
 
----
 
-# 35. Final structured log
 
-Conceptually, the record arriving at Dynatrace can contain:
+The final record can contain both application data and Kubernetes metadata:
 
 ```json
 {
-  "timestamp": "2026-08-19T10:30:00Z",
   "level": "INFO",
   "message": "Payment processed",
   "request_id": "req-123",
@@ -1354,661 +1572,84 @@ Conceptually, the record arriving at Dynatrace can contain:
 
   "kubernetes": {
     "namespace_name": "demo",
-    "pod_name": "log-demo-7d6c8",
+    "pod_name": "log-demo-xxxxx",
     "container_name": "app",
-    "node_name": "ip-10-0-1-20"
+    "node_name": "worker-node"
   }
 }
 ```
 
-The exact field names depend on the Fluent Bit/Dynatrace integration.
-
 ---
 
-# 36. Test failure scenario
+## Step 10 — Troubleshooting
 
-This is a great interview demonstration.
-
-Modify application:
+If logs don't reach Dynatrace, follow this exact chain:
 
 ```text
-ERROR
-Payment database connection failed
-```
-
-Fluent Bit sends:
-
-```text
-ERROR
-namespace=payment
-pod=payment-api
-node=worker-1
-```
-
-Dynatrace lets you correlate:
-
-```text
-ERROR logs
-      |
-      +-- pod
-      +-- namespace
-      +-- node
-      +-- service
-```
-
-Now you can investigate:
-
-```text
-Pod restart
-     +
-Error logs
-     +
-Node issue
-```
-
----
-
-# 37. Important: stdout vs file logging
-
-For Kubernetes:
-
-### Preferred
-
-```text
-Application
-    |
- stdout/stderr
-    |
- Kubernetes
-    |
- Fluent Bit
-```
-
-rather than:
-
-```text
-Application
-    |
- /app/logs/application.log
-```
-
-Why?
-
-Kubernetes naturally captures stdout/stderr.
-
-You avoid:
-
-```text
-sidecar per application
-```
-
-for basic logging.
-
----
-
-# 38. Sidecar vs DaemonSet
-
-Interview question:
-
-> "Why not use a Fluent Bit sidecar in every Pod?"
-
-You can, but it is often unnecessary.
-
-### DaemonSet
-
-```text
-Node
- |
- +-- Pod A
- +-- Pod B
- +-- Pod C
- |
- +-- Fluent Bit
-```
-
-Advantages:
-
-```text
-low overhead
-one collector/node
-central configuration
-```
-
-### Sidecar
-
-```text
-Pod
- |
- +-- Application
- |
- +-- Fluent Bit
-```
-
-Advantages:
-
-```text
-specialized log processing
-isolated application pipeline
-```
-
-Disadvantages:
-
-```text
-more containers
-more CPU/memory
-more operational complexity
-```
-
-For normal Kubernetes stdout/stderr collection:
-
-> **DaemonSet is usually the default pattern.**
-
----
-
-# 39. Fluent Bit vs Fluentd
-
-Another interview question.
-
-Both are from the Fluent ecosystem.
-
-### Fluent Bit
-
-```text
-lightweight
-low memory
-high performance
-C
-edge/agent
-```
-
-### Fluentd
-
-```text
-heavier
-Ruby-based
-more complex processing
-aggregation
-```
-
-A common architecture historically was:
-
-```text
-Fluent Bit
-    |
-    v
-Fluentd
-    |
-    v
-Backend
-```
-
-But Fluent Bit can often send directly to the destination.
-
----
-
-# 40. Fluent Bit vs Filebeat
-
-Common comparison:
-
-```text
-Fluent Bit
-    |
-    +-- lightweight
-    +-- Kubernetes friendly
-    +-- CNCF ecosystem
-    +-- high performance
-```
-
-Filebeat:
-
-```text
-Elastic ecosystem
-    |
-    +-- Elasticsearch
-    +-- Logstash
-    +-- Kibana
-```
-
-For your environment:
-
-```text
-EKS
-+
-Dynatrace
-```
-
-Fluent Bit is a very natural lightweight node-level collector.
-
----
-
-# 41. Important production concerns
-
-As a Senior Platform Engineer, don't stop at:
-
-> "I deployed Fluent Bit."
-
-Talk about:
-
-```text
-1. Buffering
-2. Backpressure
-3. Retry
-4. Multiline
-5. Cardinality
-6. Sensitive data
-7. Resource limits
-8. Log volume
-9. Destination failures
-10. DaemonSet upgrades
-11. Configuration management
-12. Security
-13. TLS
-14. Authentication
-15. Data loss strategy
-```
-
----
-
-# 42. PII/secrets
-
-Very important.
-
-Imagine:
-
-```text
-password=abc123
-credit_card=4111111111111111
-authorization=Bearer ...
-```
-
-You don't want:
-
-```text
-Application
-   ↓
-Fluent Bit
-   ↓
-Dynatrace
-```
-
-to blindly forward them.
-
-Use filters/parsers/redaction strategies to remove sensitive fields.
-
-Conceptually:
-
-```text
-Raw log
-   |
-   v
-Fluent Bit
-   |
-   | redact
-   v
-Safe log
-   |
-   v
-Dynatrace
-```
-
----
-
-# 43. Resource limits
-
-Fluent Bit itself consumes CPU and memory.
-
-Example:
-
-```yaml
-resources:
-  requests:
-    cpu: 100m
-    memory: 100Mi
-
-  limits:
-    cpu: 500m
-    memory: 500Mi
-```
-
-But don't blindly use these values.
-
-You should size based on:
-
-```text
-nodes
-logs/sec
-average log size
-burst rate
-filters
-parsing complexity
-buffer size
-destination throughput
-```
-
----
-
-# 44. Log loss scenario
-
-Suppose:
-
-```text
-Application
-100 MB/min
-```
-
-Dynatrace goes down:
-
-```text
-30 minutes
-```
-
-You potentially have:
-
-```text
-3 GB
-```
-
-of logs to buffer.
-
-If Fluent Bit has:
-
-```text
-200 MB
-```
-
-of buffering capacity:
-
-```text
-200 MB < 3 GB
-```
-
-You cannot retain everything locally.
-
-This is why buffer sizing is an engineering decision.
-
----
-
-# 45. Fluent Bit troubleshooting flow
-
-This is an excellent interview answer.
-
-Suppose:
-
-> "Logs from one namespace aren't reaching Dynatrace."
-
-I would troubleshoot layer by layer:
-
-```text
-1. Application
+1. kubectl logs
        ↓
-kubectl logs
-
-2. Node log file
+2. /var/log/containers
        ↓
-/var/log/containers
-
-3. Fluent Bit
+3. Fluent Bit pod logs
        ↓
-kubectl logs fluent-bit
-
-4. Input
+4. INPUT / Tail
        ↓
-Tail configuration
-
 5. Parser
        ↓
-CRI/JSON/multiline
-
-6. Kubernetes filter
+6. Kubernetes Filter / RBAC
        ↓
-metadata enrichment
-
-7. Buffer
+7. Buffer / Retry
        ↓
-backpressure/retries
-
-8. Output
+8. OUTPUT / TLS / Authentication
        ↓
-Dynatrace endpoint/auth/TLS
-
-9. Dynatrace
-       ↓
-ingestion/query
+9. Dynatrace ingestion
 ```
 
----
-
-# 46. Commands I'd use
-
-Check Fluent Bit:
+Useful commands:
 
 ```bash
 kubectl get pods -n logging
-```
 
-Logs:
-
-```bash
 kubectl logs -n logging daemonset/fluent-bit
-```
 
-Describe:
-
-```bash
-kubectl describe pod -n logging <fluent-bit-pod>
-```
-
-Check node:
-
-```bash
-kubectl get nodes
-```
-
-Check application:
-
-```bash
-kubectl logs -n demo <pod>
-```
-
-Check Fluent Bit config:
-
-```bash
 kubectl get configmap -n logging
-```
 
-Check DaemonSet:
-
-```bash
 kubectl describe daemonset -n logging fluent-bit
+
+kubectl logs -n demo deployment/log-demo
 ```
 
 ---
 
-# 47. Debug architecture
+## Interview mental model
+
+Just remember this:
 
 ```text
-                 Logs missing
-                      |
-                      v
-              kubectl logs
-                      |
-                 Application?
-                      |
-             +--------+--------+
-             |                 |
-             NO                YES
-             |                 |
-         Fix app       Check node log
-                               |
-                               v
-                         Fluent Bit?
-                               |
-                         +-----+-----+
-                         |           |
-                        NO          YES
-                         |           |
-                     Check RBAC   Check parser
-                                     |
-                                     v
-                                Check buffer
-                                     |
-                                     v
-                                Check output
-                                     |
-                                     v
-                               Dynatrace API
-```
+          FLUENT BIT
 
----
-
-# 48. The senior-level architecture I would recommend
-
-For your EKS environment:
-
-```text
-                        EKS
-                         |
-        +----------------+----------------+
-        |                |                |
-       Node             Node             Node
-        |                |                |
-    Applications     Applications     Applications
-        |                |                |
-        +----------------+----------------+
-                         |
-                    stdout/stderr
-                         |
-                         v
-                 /var/log/containers
-                         |
-                         v
-              Fluent Bit DaemonSet
-                         |
-          +--------------+--------------+
-          |              |              |
-          v              v              v
-       Tail          Kubernetes      Multiline
-                       Filter          Parser
-          |              |              |
-          +--------------+--------------+
-                         |
-                         v
-                      Buffer
-                         |
-                         v
-                       HTTPS
-                         |
-                         v
-                    Dynatrace
-                         |
-              +----------+----------+
-              |          |          |
-             Logs     Dashboards   Alerts
-```
-
----
-
-# 49. The interview answer: "Explain Fluent Bit"
-
-You can answer:
-
-> "Fluent Bit is a lightweight telemetry collector that I can deploy as a DaemonSet on Kubernetes nodes. For pod logs, applications write to stdout/stderr, Kubernetes/container runtime writes those logs to node-local container log files, and Fluent Bit uses the Tail input to collect them. I use the CRI or appropriate container parser to interpret the container log format, then the Kubernetes filter enriches each record with namespace, pod, container and other metadata. Additional filters can parse JSON, redact sensitive fields or handle multiline stack traces. Fluent Bit buffers records and forwards them over TLS to our observability backend, in our case Dynatrace. If the backend is unavailable, buffering and retry mechanisms provide resilience, subject to configured storage limits."
-
-That's a **Senior-level answer**.
-
----
-
-# 50. The Dynatrace interview answer
-
-If asked:
-
-> **"How do you ship Kubernetes pod logs to Dynatrace?"**
-
-Say:
-
-> "I deploy Fluent Bit as a DaemonSet so each Kubernetes node has a collector. It mounts the node's container log directories and uses the Tail input to read pod stdout/stderr logs. I configure the appropriate CRI parser, Kubernetes filter for metadata enrichment, JSON/multiline processing where required, buffering for destination failures, and a Dynatrace output/HTTP ingestion path over TLS. Authentication is provided through a Kubernetes Secret or our centralized secret-management mechanism rather than hardcoding credentials. The resulting records are ingested into Dynatrace with Kubernetes context such as namespace, pod and container, allowing us to correlate logs with the workload and infrastructure."
-
----
-
-# 51. The five things you absolutely need to remember
-
-For your interview, remember this:
-
-```text
-                FLUENT BIT
-
-                 INPUT
-                   |
-              Tail / Systemd
-                   |
-                   v
-                PARSER
-                   |
-            CRI / JSON / Regex
-                   |
-                   v
-                FILTER
-                   |
-       Kubernetes / Modify / Grep
-                   |
-                   v
-                BUFFER
-                   |
-             memory/filesystem
-                   |
-                   v
-                OUTPUT
-                   |
-                   v
-              Dynatrace
-```
-
-And Kubernetes:
-
-```text
-Pod
- ↓
+Application
+     ↓
 stdout/stderr
- ↓
+     ↓
 /var/log/containers
- ↓
-Fluent Bit DaemonSet
- ↓
-Tail
- ↓
-CRI Parser
- ↓
-Kubernetes Filter
- ↓
-JSON/Multiline
- ↓
-Buffer
- ↓
-TLS
- ↓
-Dynatrace
+     ↓
+   INPUT
+   Tail
+     ↓
+  PARSER
+  CRI/JSON
+     ↓
+  FILTER
+  Kubernetes
+     ↓
+  BUFFER
+  memory/disk
+     ↓
+  OUTPUT
+  Dynatrace
 ```
 
-And the three most important **Senior-level failure scenarios**:
+**One-line interview answer:**
 
-```text
-Dynatrace DOWN
-    ↓
-Buffer + Retry + Backpressure
-```
-
-```text
-Java stack trace
-    ↓
-Multiline parser
-```
-
-```text
-Sensitive data
-    ↓
-Filter/redaction
-    ↓
-Dynatrace
-```
-
-The next thing I would practice hands-on is **the exact Fluent Bit Helm `values.yaml` for EKS + DaemonSet + CRI parsing + Kubernetes metadata + multiline + filesystem buffering + Secret-based Dynatrace authentication + Dynatrace output**, because that is where the conceptual knowledge above turns into the production configuration an interviewer is likely to ask you to design.
+> **"I run Fluent Bit as a DaemonSet on each Kubernetes node. It tails container logs from `/var/log/containers`, parses the CRI format, enriches them with Kubernetes metadata using the Kubernetes filter, buffers them for reliability, and forwards them securely to Dynatrace."**
