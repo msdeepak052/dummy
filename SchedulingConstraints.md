@@ -790,6 +790,544 @@ podAntiAffinity
 ```
 
 ---
+Absolutely — here it is in the usual chat format, clean and interview-friendly.
+
+# 16. Topology Spread Constraints
+
+**Topology Spread Constraints** are used to control **how Pods are distributed across failure domains**, such as:
+
+* Nodes
+* Availability Zones
+* Regions
+
+The main goal is:
+
+> **Keep replicas evenly distributed instead of allowing them to become concentrated in one topology.**
+
+---
+
+## 1. Why do we need Topology Spread Constraints?
+
+Suppose you have 3 replicas:
+
+```text
+Pod 1
+Pod 2
+Pod 3
+```
+
+And your cluster has 3 Availability Zones:
+
+```text
+Zone A
+Zone B
+Zone C
+```
+
+Without any constraint, Kubernetes might schedule:
+
+```text
+Zone A → Pod 1
+Zone A → Pod 2
+Zone A → Pod 3
+
+Zone B → Nothing
+Zone C → Nothing
+```
+
+That's bad for availability.
+
+If **Zone A goes down**, all replicas disappear.
+
+With topology spread constraints, you can tell Kubernetes:
+
+> "Spread my Pods across the zones as evenly as possible."
+
+Ideally:
+
+```text
+Zone A → Pod 1
+Zone B → Pod 2
+Zone C → Pod 3
+```
+
+---
+
+# 2. Basic Example
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: myapp
+
+  template:
+    metadata:
+      labels:
+        app: myapp
+
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+
+          labelSelector:
+            matchLabels:
+              app: myapp
+
+      containers:
+        - name: nginx
+          image: nginx
+```
+
+The important part is:
+
+```yaml
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app: myapp
+```
+
+---
+
+# 3. Understanding `topologyKey`
+
+This tells Kubernetes **what topology domain to spread across**.
+
+For Availability Zones:
+
+```yaml
+topologyKey: topology.kubernetes.io/zone
+```
+
+For nodes:
+
+```yaml
+topologyKey: kubernetes.io/hostname
+```
+
+So:
+
+### Spread across AZs
+
+```yaml
+topologyKey: topology.kubernetes.io/zone
+```
+
+Example:
+
+```text
+AZ-A → 2 Pods
+AZ-B → 2 Pods
+AZ-C → 1 Pod
+```
+
+### Spread across nodes
+
+```yaml
+topologyKey: kubernetes.io/hostname
+```
+
+Example:
+
+```text
+Node-1 → 2 Pods
+Node-2 → 1 Pod
+Node-3 → 1 Pod
+```
+
+---
+
+# 4. What is `maxSkew`?
+
+This is the **maximum allowed difference** between the most-loaded topology domain and the least-loaded topology domain.
+
+Formula:
+
+```text
+skew = maximum Pods - minimum Pods
+```
+
+Suppose:
+
+```text
+Zone A → 2 Pods
+Zone B → 1 Pod
+Zone C → 1 Pod
+```
+
+Then:
+
+```text
+maximum = 2
+minimum = 1
+
+skew = 2 - 1
+     = 1
+```
+
+Therefore:
+
+```yaml
+maxSkew: 1
+```
+
+is satisfied.
+
+---
+
+## Another example
+
+Suppose:
+
+```text
+Zone A → 3 Pods
+Zone B → 1 Pod
+Zone C → 1 Pod
+```
+
+Then:
+
+```text
+3 - 1 = 2
+```
+
+If:
+
+```yaml
+maxSkew: 1
+```
+
+then the distribution violates the desired skew.
+
+Kubernetes will try to avoid making the distribution that uneven.
+
+---
+
+# 5. `whenUnsatisfiable`
+
+This tells Kubernetes what to do if placing a Pod would violate the topology constraint.
+
+There are two important values.
+
+## `DoNotSchedule`
+
+```yaml
+whenUnsatisfiable: DoNotSchedule
+```
+
+Meaning:
+
+> Don't schedule the Pod if doing so would violate the constraint.
+
+The Pod remains:
+
+```text
+Pending
+```
+
+This is a **hard scheduling constraint**.
+
+---
+
+## `ScheduleAnyway`
+
+```yaml
+whenUnsatisfiable: ScheduleAnyway
+```
+
+Meaning:
+
+> Try to spread the Pods, but schedule the Pod anyway if perfect spreading isn't possible.
+
+This is more like a **soft preference**.
+
+---
+
+# 6. `labelSelector`
+
+This tells Kubernetes:
+
+> "Which Pods should be considered when calculating the distribution?"
+
+Example:
+
+```yaml
+labelSelector:
+  matchLabels:
+    app: myapp
+```
+
+Kubernetes looks at Pods having:
+
+```yaml
+app: myapp
+```
+
+and calculates their distribution across the topology domains.
+
+For example:
+
+```text
+Zone A → myapp Pod
+Zone B → myapp Pod
+Zone C → myapp Pod
+```
+
+---
+
+# 7. Complete Example
+
+Imagine an EKS cluster:
+
+```text
+                 EKS Cluster
+                     |
+       +-------------+-------------+
+       |             |             |
+     AZ-A           AZ-B          AZ-C
+       |             |             |
+    Node-A1       Node-B1       Node-C1
+       |             |             |
+     Pod-1         Pod-2         Pod-3
+```
+
+Deployment:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 6
+
+  selector:
+    matchLabels:
+      app: web
+
+  template:
+    metadata:
+      labels:
+        app: web
+
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: web
+
+      containers:
+        - name: nginx
+          image: nginx:1.27
+```
+
+Kubernetes tries to achieve something like:
+
+```text
+AZ-A → 2 Pods
+AZ-B → 2 Pods
+AZ-C → 2 Pods
+```
+
+Distribution:
+
+```text
+2 / 2 / 2
+```
+
+Skew:
+
+```text
+2 - 2 = 0
+```
+
+Perfectly balanced.
+
+---
+
+# 8. What happens when a zone already has more Pods?
+
+Suppose the current distribution is:
+
+```text
+AZ-A → 3
+AZ-B → 2
+AZ-C → 2
+```
+
+Skew:
+
+```text
+3 - 2 = 1
+```
+
+Still satisfies:
+
+```yaml
+maxSkew: 1
+```
+
+But suppose Kubernetes wants to place another Pod.
+
+If it places it in AZ-A:
+
+```text
+AZ-A → 4
+AZ-B → 2
+AZ-C → 2
+```
+
+Now:
+
+```text
+4 - 2 = 2
+```
+
+That violates:
+
+```yaml
+maxSkew: 1
+```
+
+With:
+
+```yaml
+whenUnsatisfiable: DoNotSchedule
+```
+
+Kubernetes won't place that Pod in AZ-A.
+
+It will try another eligible topology domain.
+
+---
+
+# 9. Topology Spread vs Pod Anti-Affinity
+
+This is a **very important interview comparison**.
+
+### Pod Anti-Affinity
+
+You basically say:
+
+> "Don't put these Pods together."
+
+Example:
+
+```yaml
+podAntiAffinity:
+  requiredDuringSchedulingIgnoredDuringExecution:
+    - labelSelector:
+        matchLabels:
+          app: myapp
+      topologyKey: kubernetes.io/hostname
+```
+
+This can enforce:
+
+```text
+Node 1 → Pod 1
+Node 2 → Pod 2
+Node 3 → Pod 3
+```
+
+---
+
+### Topology Spread
+
+You say:
+
+> **"Keep these Pods evenly distributed."**
+
+Example:
+
+```yaml
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app: myapp
+```
+
+This gives you much more control over **how balanced** the distribution should be.
+
+---
+
+# 10. Simple way to remember
+
+### Pod Affinity
+
+> **Put Pods together.**
+
+```text
+A → Pod 1
+A → Pod 2
+```
+
+### Pod Anti-Affinity
+
+> **Keep Pods apart.**
+
+```text
+Node 1 → Pod 1
+Node 2 → Pod 2
+```
+
+### Topology Spread Constraints
+
+> **Keep Pods evenly distributed.**
+
+```text
+Zone A → 2
+Zone B → 2
+Zone C → 2
+```
+
+---
+
+# Interview Answer
+
+If the interviewer asks:
+
+**"What are topology spread constraints?"**
+
+A good answer is:
+
+> **Topology spread constraints are Kubernetes scheduling constraints used to control the distribution of Pods across topology domains such as nodes or Availability Zones. We use `topologyKey` to define the topology, `maxSkew` to define how much imbalance is acceptable, and `whenUnsatisfiable` to determine whether Kubernetes should reject or tolerate an uneven placement. They are useful for improving high availability and preventing replicas from becoming concentrated in a single node or AZ.**
+
+The key mental model is:
+
+```text
+Affinity
+   ↓
+Where SHOULD my Pod go?
+
+Anti-Affinity
+   ↓
+Where SHOULD my Pod NOT go?
+
+Topology Spread
+   ↓
+How EVENLY should my Pods be distributed?
+```
+
+---
 
 # 16. Final mental model
 
