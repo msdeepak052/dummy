@@ -1,39 +1,6 @@
 # Prometheus
-For a **Senior DevOps / Platform Engineer interview**, I would learn Prometheus in this order:
 
-```text
-Prometheus fundamentals
-        ↓
-Metrics model
-        ↓
-Architecture & components
-        ↓
-Scraping / Service Discovery
-        ↓
-Exporters & instrumentation
-        ↓
-PromQL
-        ↓
-Recording rules
-        ↓
-Alerting + Alertmanager
-        ↓
-Kubernetes monitoring
-        ↓
-Prometheus Operator / ServiceMonitor
-        ↓
-Prometheus Adapter
-        ↓
-HPA with custom metrics
-        ↓
-Scaling / HA / Remote Write / Thanos
-```
-
-I'll cover the whole chain and then build a **complete Kubernetes + Prometheus + Prometheus Adapter + HPA demo**.
-
----
-
-# 1. What is Prometheus?
+## 1. What is Prometheus?
 
 **Prometheus is a monitoring and alerting system that collects numerical metrics, stores them as time-series data, and provides PromQL to query and analyze those metrics.**
 
