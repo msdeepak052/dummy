@@ -1,4 +1,6 @@
-Absolutely. For Kubernetes interviews, understand **ConfigMap and Secret as two different ways of injecting configuration into Pods**.
+# ConfigMap and Secret in K8s
+
+For Kubernetes interviews, understand **ConfigMap and Secret as two different ways of injecting configuration into Pods**.
 
 The core idea:
 
