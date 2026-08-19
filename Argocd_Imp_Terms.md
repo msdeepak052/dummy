@@ -11,7 +11,7 @@ Let's use one realistic application throughout.
 
 ---
 
-# 1. Start with the GitOps model
+## 1. Start with the GitOps model
 
 Suppose Git contains:
 
