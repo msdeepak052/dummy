@@ -1,4 +1,5 @@
-Yes. This is an important Dynatrace topic for a **Senior DevOps / Platform Engineer**, especially because you need to understand where **OneAgent, ActiveGate, Dynatrace Operator, Fluent Bit and Dynatrace itself** fit together.
+# DT ActiveGate vs OneAgent
+This is an important Dynatrace topic for a **Senior DevOps / Platform Engineer**, especially because you need to understand where **OneAgent, ActiveGate, Dynatrace Operator, Fluent Bit and Dynatrace itself** fit together.
 
 The biggest thing to remember is:
 
