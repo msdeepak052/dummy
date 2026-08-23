@@ -1,5 +1,3 @@
-Absolutely. Since you're working with **Argo CD**, the **App of Apps pattern** is one of the most important GitOps patterns to understand.
-
 # 1. What is App of Apps?
 
 The basic idea is:
