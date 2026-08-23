@@ -30,7 +30,35 @@ It is to focus on **how traffic moves between old and new versions**.
 
 ## Canary
 
+**Canary deployment** is a release strategy where you gradually roll out changes to a small subset of users or infrastructure before making them available to the entire production environment. It minimizes blast radius by validating new code under real production traffic while the vast majority of users remain on the stable baseline.
+
+**How the Workflow Works**
+
+1. **Baseline Phase:** 100% of live traffic routes to the stable version (**Baseline/v1**).
+2. **Canary Spin-up:** A small pool of instances or pods running the new version (**Canary/v2**) is spun up alongside the baseline.
+3. **Traffic Splitting:** A service mesh (e.g., Istio, Linkerd) or ingress controller routes a small percentage (e.g., 5%–10%) of live traffic to the Canary, or routes based on specific headers/user cohorts.
+4. **Metric Analysis:** Automated health checks monitor real-time metrics—HTTP 5xx error rates, latency (p95/p99), and CPU/memory saturation.
+5. **Promotion or Rollback:**
+* **Success:** Gradually increment traffic (10% $\rightarrow$ 25% $\rightarrow$ 50% $\rightarrow$ 100%) and sunset the old baseline.
+* **Failure:** Immediately shift all traffic back to 0% on the Canary and terminate unhealthy pods.
+
+
+
+---
+
+**Canary vs. Blue-Green Comparison**
+
+| Feature | Canary Deployment | Blue-Green Deployment |
+| --- | --- | --- |
+| **Traffic Shift** | Incremental / progressive percentage split | All-at-once (100% cutover) |
+| **Resource Overhead** | Low (only requires capacity for the small canary subset) | High (requires 2x full infrastructure capacity) |
+| **Risk / Blast Radius** | Minimal (only affects the small canary traffic share) | Moderate (errors impact all users immediately upon cutover) |
+| **Routing Complexity** | High (requires weighted routing via Service Mesh or Ingress) | Low (simple load balancer or service selector switch) |
+| **Testing Realism** | High (tests actual production load patterns incrementally) | Synthetic or staging tests prior to full cutover |
+
 You run old and new versions **at the same time**, but gradually shift traffic:
+
+<img width="997" height="932" alt="image" src="https://github.com/user-attachments/assets/15150c33-79e2-4c3b-baff-0146c5c2b66d" />
 
 ```text
                 Load Balancer
