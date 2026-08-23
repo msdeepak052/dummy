@@ -1032,6 +1032,216 @@ A strong Senior-level answer:
           Pods           Pods           Pods
 ```
 
+---
+The **App of Apps** pattern uses a single parent ArgoCD Application to discover and deploy multiple child Applications. When managing Helm-based child apps with baseline and environment-specific overrides, ArgoCD allows you to supply multiple values files (`values.yaml` and `override.yaml`) directly within the child `Application` spec.
+
+---
+
+### Directory Structure
+
+```text
+git-ops-repo/
+├── bootstrap/                      # Parent App (Plain YAML or Helm)
+│   └── root-app.yaml               # Root Application pointing to parent-app/
+├── parent-app/                     # Parent Helm Chart
+│   ├── Chart.yaml
+│   ├── values.yaml
+│   └── templates/
+│       ├── guestbook.yaml          # Child App 1 (Application CRD)
+│       └── backend.yaml            # Child App 2 (Application CRD)
+└── charts/                         # Child Helm Charts
+    ├── guestbook/
+    │   ├── Chart.yaml
+    │   ├── values.yaml             # Default values
+    │   ├── override.yaml           # Environment/Instance overrides
+    │   └── templates/
+    │       └── deployment.yaml
+    └── backend/
+        ├── Chart.yaml
+        ├── values.yaml
+        ├── override.yaml
+        └── templates/
+            └── deployment.yaml
+
+```
+
+---
+
+### 1. Root Bootstrap Application (`bootstrap/root-app.yaml`)
+
+This is applied manually once (or via CI/CD) to initiate the parent app.
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-application
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/<your-org>/git-ops-repo.git
+    targetRevision: HEAD
+    path: parent-app
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+```
+
+---
+
+### 2. Parent Chart (`parent-app/Chart.yaml`)
+
+```yaml
+apiVersion: v2
+name: parent-app
+description: Umbrella chart deploying ArgoCD Child Applications
+version: 0.1.0
+appVersion: "1.0.0"
+
+```
+
+---
+
+### 3. Child Application Templates (`parent-app/templates/`)
+
+Each child application is defined as an ArgoCD `Application` resource. Using `valueFiles`, ArgoCD merges `values.yaml` and `override.yaml` in sequential order (keys in `override.yaml` take precedence).
+
+#### `parent-app/templates/guestbook.yaml`
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guestbook
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/<your-org>/git-ops-repo.git
+    targetRevision: HEAD
+    path: charts/guestbook
+    helm:
+      valueFiles:
+        - values.yaml
+        - override.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: guestbook-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+```
+
+#### `parent-app/templates/backend.yaml`
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backend
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/<your-org>/git-ops-repo.git
+    targetRevision: HEAD
+    path: charts/backend
+    helm:
+      valueFiles:
+        - values.yaml
+        - override.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: backend-prod
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+```
+
+---
+
+### 4. Child Helm App Values Example
+
+#### `charts/guestbook/values.yaml` (Default)
+
+```yaml
+replicaCount: 1
+image:
+  repository: gcr.io/heptio-images/ks-guestbook-demo
+  tag: v0.1
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+```
+
+#### `charts/guestbook/override.yaml` (Overrides)
+
+```yaml
+replicaCount: 3
+
+service:
+  type: NodePort
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+```
+
+---
+
+### 5. Deployment Step
+
+Apply the root application to your cluster:
+
+```bash
+kubectl apply -f bootstrap/root-app.yaml
+
+```
+
+Once synced, ArgoCD will:
+
+1. Render the `parent-app` templates into the individual `Application` manifests.
+2. Create `guestbook` and `backend` Applications inside the `argocd` namespace.
+3. Automatically trigger Helm runs for both child charts, applying `values.yaml` first and merging `override.yaml` on top.
+---
 ### Memorize this:
 
 **App of Apps = Application that manages Applications.**
