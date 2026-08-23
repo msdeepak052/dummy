@@ -2,9 +2,7 @@
 
 It is to focus on **how traffic moves between old and new versions**.
 
-# 1. The core difference
-
-### Blue-Green
+## Blue-Green
 
 **Blue-Green deployment** is a release strategy where you run two identical production environments: one hosting the live version (**Blue**) and the other hosting the new version (**Green**). Once the Green environment is verified, a router or load balancer switches live user traffic from Blue to Green instantly.
 
@@ -30,7 +28,7 @@ It is to focus on **how traffic moves between old and new versions**.
 
 ---
 
-### Canary
+## Canary
 
 You run old and new versions **at the same time**, but gradually shift traffic:
 
