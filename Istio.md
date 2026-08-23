@@ -2165,6 +2165,1000 @@ istioctl proxy-config endpoints <pod> -n <namespace>
 That is the **Istio equivalent of checking the generated `nginx.conf`**.
 
 ---
+Absolutely. Let's do **one complete Istio Canary Deployment demo**, from deploying v1/v2 → creating the Istio objects → sending traffic → seeing 90/10 distribution → changing it to 50/50.
+
+I'll keep the focus strictly on **Istio + Envoy + Istiod + Kubernetes**.
+
+# Demo 2 — Canary Deployment using Istio
+
+## 1. What we want to build
+
+We'll deploy:
+
+```text
+                    Client
+                      │
+                      │ HTTP
+                      ▼
+              Istio Ingress Gateway
+                      │
+                      ▼
+                VirtualService
+                  90% / 10%
+                 ┌────┴────┐
+                90%       10%
+                 │          │
+                 ▼          ▼
+              app-v1     app-v2
+```
+
+Both versions use the same Kubernetes Service:
+
+```text
+app-service
+    │
+    ├── v1 Pods
+    │
+    └── v2 Pods
+```
+
+But Istio will control the traffic split.
+
+---
+
+# 2. End-to-end architecture
+
+![Image](https://images.openai.com/static-rsc-4/-XM4IL9vqwNXLsRFaUA8aeyRECuUhdL9mvjjDe3l2TghXZ-rmJpbg2w31dUtnty7d1Cjf9qh40n9_OFzoklegxBJPgyd51NdKIocs_T6yCyY6I9m1WANXSVShe3f7yxOBJfRyJJOV18ZGoRpgN7wfsv2_eAMGtiri-UCKLFP5bwpGs_uU0adhNpC3RtIsi3Z?purpose=fullsize)
+
+![Image](https://images.openai.com/static-rsc-4/irfZZoK02NprDB62zUEdrInTwYm-gJhQ3EjwHJlgdgpzGXmPypYJFGKl82x9vnl1T2iIAxsk-O_r131ek5zq9JitfpNNZdTSpOt3ZUiyu546FjjUymVKlKGl1ZcQgVaEALSs1V8k3h8WBWaEy2w6YaPQAy6iWjmSWKnqY9ZHSz8oCju_SalG-Yl31Q8MmvAf?purpose=fullsize)
+
+![Image](https://images.openai.com/static-rsc-4/cAbU28hzEXJ3aCqhgLKX8s6IZjFL-q05rtsZIssLGTQz0qJayqdB2m4HdzWQnms5sik-4qJkAiT0B7wZGXKj41ErlGLjnf3zKtoVuV5aIodtI2bvTWraUE-jDxUwhcvaThZjNmHosC6E-6nUn9ky8jtz8ppqQwpFeLjndAyWhIac2t9zLUS8W_gfXhHzx99v?purpose=fullsize)
+
+![Image](https://images.openai.com/static-rsc-4/FRI9hyQA9SihXjOGl_32RsRfu1hGdSdK7WZ2UbGAjCnnopr_n0vI3slfzDKWLIbkwRKhXJN1By4_VMKD0GJQBIx81kjEE85wi_dmnffmcYWXGE7YBcF29gzVSuJaXd0kUW8c6OKpq0FvMhl3a0-KqS_rsTohk3_oZXDeokJ2fXU8w14gdiYVWQJukTGgFxSQ?purpose=fullsize)
+
+The complete flow is:
+
+```text
+                    User
+                     │
+                     │ GET /
+                     ▼
+          ┌──────────────────────┐
+          │ Istio IngressGateway │
+          │       Envoy          │
+          └──────────┬───────────┘
+                     │
+                     │ HTTP request
+                     ▼
+              VirtualService
+                     │
+             90%     │     10%
+              ┌──────┴──────┐
+              ▼             ▼
+          subset:v1      subset:v2
+              │             │
+              ▼             ▼
+        app-v1 Pods      app-v2 Pods
+```
+
+Now let's build it.
+
+---
+
+# 3. Prerequisites
+
+You need:
+
+```bash
+kubectl
+istioctl
+```
+
+and an Istio installation with an ingress gateway.
+
+Check:
+
+```bash
+istioctl version
+```
+
+```bash
+kubectl get pods -n istio-system
+```
+
+You should see something similar to:
+
+```text
+NAME                                    READY   STATUS
+istiod-7c8f6c7d6f-x2k9p                1/1     Running
+istio-ingressgateway-5d6f7c8f9d-x7k2m  1/1     Running
+```
+
+---
+
+# 4. Create namespace
+
+Create:
+
+```bash
+kubectl create namespace canary
+```
+
+Enable automatic sidecar injection:
+
+```bash
+kubectl label namespace canary istio-injection=enabled
+```
+
+Verify:
+
+```bash
+kubectl get namespace canary --show-labels
+```
+
+You should see:
+
+```text
+istio-injection=enabled
+```
+
+This means newly created pods will get:
+
+```text
+Application container
+        +
+Envoy sidecar
+```
+
+---
+
+# 5. Deploy application v1
+
+Create:
+
+```yaml id="f5x8pj"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-v1
+  namespace: canary
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: v1
+    spec:
+      containers:
+        - name: myapp
+          image: hashicorp/http-echo:1.0
+          args:
+            - "-text=Hello from VERSION 1"
+          ports:
+            - containerPort: 5678
+```
+
+Apply:
+
+```bash
+kubectl apply -f myapp-v1.yaml
+```
+
+Check:
+
+```bash
+kubectl get pods -n canary -o wide
+```
+
+You should see:
+
+```text
+NAME                        READY
+myapp-v1-7d8f9c7d6f-a1b2c   2/2
+myapp-v1-7d8f9c7d6f-d4e5f   2/2
+myapp-v1-7d8f9c7d6f-f6g7h   2/2
+```
+
+Why `2/2`?
+
+```text
+myapp container
++
+Envoy sidecar
+```
+
+---
+
+# 6. Deploy application v2
+
+Now deploy the canary.
+
+```yaml id="ub6sjy"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-v2
+  namespace: canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: myapp
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: v2
+    spec:
+      containers:
+        - name: myapp
+          image: hashicorp/http-echo:1.0
+          args:
+            - "-text=Hello from VERSION 2"
+          ports:
+            - containerPort: 5678
+```
+
+Apply:
+
+```bash
+kubectl apply -f myapp-v2.yaml
+```
+
+Now:
+
+```bash
+kubectl get pods -n canary
+```
+
+Example:
+
+```text
+NAME                        READY
+myapp-v1-7d8f9c7d6f-a1b2c   2/2
+myapp-v1-7d8f9c7d6f-d4e5f   2/2
+myapp-v1-7d8f9c7d6f-f6g7h   2/2
+myapp-v2-5c9f7d8c8d-x8y9z   2/2
+```
+
+---
+
+# 7. Create the Kubernetes Service
+
+This Service selects:
+
+```text
+app: myapp
+```
+
+Notice that it does **NOT** select `version`.
+
+```yaml id="ffas9o"
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp
+  namespace: canary
+spec:
+  selector:
+    app: myapp
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5678
+```
+
+Apply:
+
+```bash
+kubectl apply -f service.yaml
+```
+
+Now Kubernetes sees:
+
+```text
+                  myapp Service
+                       │
+             selector: app=myapp
+                       │
+           ┌───────────┴───────────┐
+           │                       │
+           ▼                       ▼
+       v1 Pods                  v2 Pod
+      10.0.1.10                 10.0.2.20
+      10.0.1.11
+      10.0.1.12
+```
+
+This is important.
+
+**Kubernetes Service itself isn't doing the 90/10 canary split.**
+
+Istio will do that.
+
+---
+
+# 8. Create DestinationRule
+
+Now we tell Istio that this service has two logical subsets.
+
+```yaml id="bq2jti"
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: myapp
+  namespace: canary
+spec:
+  host: myapp.canary.svc.cluster.local
+
+  subsets:
+    - name: v1
+      labels:
+        version: v1
+
+    - name: v2
+      labels:
+        version: v2
+```
+
+Apply:
+
+```bash
+kubectl apply -f destination-rule.yaml
+```
+
+Now Istiod understands:
+
+```text
+myapp
+ │
+ ├── subset v1
+ │      └── version=v1
+ │
+ └── subset v2
+        └── version=v2
+```
+
+---
+
+# 9. Create Gateway
+
+Now we need an entry point from outside.
+
+```yaml id="9i4l2r"
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: myapp-gateway
+  namespace: canary
+spec:
+  selector:
+    istio: ingressgateway
+
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+
+      hosts:
+        - myapp.example.com
+```
+
+Apply:
+
+```bash
+kubectl apply -f gateway.yaml
+```
+
+The Gateway says:
+
+> Istio Ingress Gateway should accept HTTP traffic for `myapp.example.com`.
+
+---
+
+# 10. Create VirtualService — the actual canary logic
+
+This is where the **90/10 traffic split** happens.
+
+```yaml id="1e1mkt"
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: myapp
+  namespace: canary
+spec:
+  hosts:
+    - myapp.example.com
+
+  gateways:
+    - myapp-gateway
+
+  http:
+    - route:
+        - destination:
+            host: myapp.canary.svc.cluster.local
+            subset: v1
+          weight: 90
+
+        - destination:
+            host: myapp.canary.svc.cluster.local
+            subset: v2
+          weight: 10
+```
+
+Apply:
+
+```bash
+kubectl apply -f virtual-service.yaml
+```
+
+Now your architecture is:
+
+```text
+                         Client
+                           │
+                           │ myapp.example.com
+                           ▼
+                 Istio Ingress Gateway
+                           │
+                           ▼
+                    VirtualService
+                           │
+                    ┌──────┴──────┐
+                    │             │
+                  90%            10%
+                    │             │
+                    ▼             ▼
+                 subset v1     subset v2
+                    │             │
+                    ▼             ▼
+                 v1 Pods        v2 Pod
+```
+
+---
+
+# 11. Now understand WHO calls WHAT
+
+This is the most important part.
+
+When you run:
+
+```bash
+kubectl apply -f virtual-service.yaml
+```
+
+the flow is:
+
+```text
+kubectl
+   │
+   ▼
+Kubernetes API Server
+   │
+   ▼
+VirtualService stored in etcd
+   │
+   ▼
+Istiod watches Kubernetes API
+   │
+   ▼
+Istiod reads VirtualService
++
+DestinationRule
++
+Gateway
++
+Services
++
+Endpoints
+   │
+   ▼
+Istiod builds Envoy configuration
+   │
+   ▼
+xDS
+   │
+   ▼
+Istio Ingress Gateway Envoy
+```
+
+**Your application does NOT call Istiod.**
+
+Istiod pushes configuration **to Envoy**.
+
+---
+
+# 12. What happens when a request arrives?
+
+Suppose you run:
+
+```bash
+curl http://myapp.example.com/
+```
+
+The request flow is:
+
+```text
+curl
+ │
+ ▼
+Load Balancer
+ │
+ ▼
+Istio Ingress Gateway
+ │
+ ▼
+Envoy
+ │
+ │ checks route configuration
+ ▼
+VirtualService-derived route
+ │
+ ├──────── 90% ────────► subset v1
+ │
+ └──────── 10% ────────► subset v2
+```
+
+Suppose this request is selected for v2:
+
+```text
+Client
+  │
+  ▼
+Ingress Gateway Envoy
+  │
+  │ 10%
+  ▼
+subset v2
+  │
+  ▼
+myapp-v2
+```
+
+The application returns:
+
+```text
+Hello from VERSION 2
+```
+
+---
+
+# 13. Verify the Envoy route
+
+This is where the **NGINX `nginx.conf` analogy** becomes useful.
+
+Find the gateway:
+
+```bash
+kubectl get pods -n istio-system
+```
+
+Then:
+
+```bash
+istioctl proxy-config routes \
+  <istio-ingressgateway-pod> \
+  -n istio-system
+```
+
+You should see a route associated with:
+
+```text
+myapp.example.com
+```
+
+For detailed output:
+
+```bash
+istioctl proxy-config routes \
+  <istio-ingressgateway-pod> \
+  -n istio-system \
+  -o json
+```
+
+Conceptually, the generated Envoy route contains:
+
+```text
+myapp.example.com
+       │
+       ▼
+ weighted clusters
+       │
+       ├── 90 → myapp subset v1
+       │
+       └── 10 → myapp subset v2
+```
+
+This is what **Istiod has translated your VirtualService into**.
+
+---
+
+# 14. Verify the clusters
+
+Run:
+
+```bash
+istioctl proxy-config clusters \
+  <istio-ingressgateway-pod> \
+  -n istio-system
+```
+
+You should find clusters conceptually like:
+
+```text
+outbound|80|v1|myapp.canary.svc.cluster.local
+outbound|80|v2|myapp.canary.svc.cluster.local
+```
+
+So:
+
+```text
+VirtualService
+      │
+      ▼
+    RDS
+      │
+      ▼
+Weighted routes
+
+DestinationRule
+      │
+      ▼
+    CDS
+      │
+      ▼
+v1/v2 clusters
+```
+
+---
+
+# 15. Verify the endpoints
+
+Now:
+
+```bash
+istioctl proxy-config endpoints \
+  <istio-ingressgateway-pod> \
+  -n istio-system
+```
+
+Conceptually:
+
+```text
+CLUSTER                                      ENDPOINT
+
+outbound|80|v1|myapp.canary.svc...          10.10.1.10:5678
+                                             10.10.1.11:5678
+                                             10.10.1.12:5678
+
+outbound|80|v2|myapp.canary.svc...          10.10.2.10:5678
+```
+
+Now you have proved the entire chain:
+
+```text
+VirtualService
+       │
+       │ 90/10
+       ▼
+     Istiod
+       │
+       ├── RDS → weighted routes
+       │
+       ├── CDS → v1/v2 clusters
+       │
+       └── EDS → pod endpoints
+       │
+       ▼
+Ingress Gateway Envoy
+       │
+       ├── 90% → v1
+       │
+       └── 10% → v2
+```
+
+---
+
+# 16. Test the canary
+
+Send 100 requests.
+
+```bash
+for i in {1..100}; do
+  curl -s http://myapp.example.com/
+  echo
+done
+```
+
+You might see:
+
+```text
+Hello from VERSION 1
+Hello from VERSION 1
+Hello from VERSION 1
+Hello from VERSION 2
+Hello from VERSION 1
+Hello from VERSION 1
+...
+```
+
+Approximately:
+
+```text
+VERSION 1 → ~90 requests
+VERSION 2 → ~10 requests
+```
+
+**It won't necessarily be exactly 90/10 for only 100 requests.** It's a traffic weighting, not a promise that every 10 requests gives exactly one v2 request.
+
+---
+
+# 17. Now increase the canary to 50%
+
+Change:
+
+```yaml id="ry3k6n"
+http:
+  - route:
+      - destination:
+          host: myapp.canary.svc.cluster.local
+          subset: v1
+        weight: 50
+
+      - destination:
+          host: myapp.canary.svc.cluster.local
+          subset: v2
+        weight: 50
+```
+
+Apply:
+
+```bash
+kubectl apply -f virtual-service.yaml
+```
+
+Now:
+
+```text
+                 VirtualService
+                       │
+                ┌──────┴──────┐
+               50%           50%
+                │              │
+                ▼              ▼
+             subset v1      subset v2
+```
+
+Istiod detects the change:
+
+```text
+VirtualService changed
+       │
+       ▼
+Kubernetes API
+       │
+       ▼
+     Istiod
+       │
+       ▼
+new RDS configuration
+       │
+       ▼
+Envoy Gateway
+```
+
+**You don't restart the Envoy gateway.**
+
+That's one of the major benefits of Istio's dynamic configuration.
+
+---
+
+# 18. Finally move 100% to v2
+
+Once you've validated the canary:
+
+```yaml id="8n3i3a"
+http:
+  - route:
+      - destination:
+          host: myapp.canary.svc.cluster.local
+          subset: v2
+        weight: 100
+```
+
+Apply:
+
+```bash
+kubectl apply -f virtual-service.yaml
+```
+
+Now:
+
+```text
+Client
+  │
+  ▼
+Istio Gateway
+  │
+  ▼
+VirtualService
+  │
+  │ 100%
+  ▼
+subset v2
+  │
+  ▼
+v2 Pods
+```
+
+Then you can remove v1:
+
+```bash
+kubectl delete deployment myapp-v1 -n canary
+```
+
+---
+
+# 19. What exactly is happening inside Istiod?
+
+This is the part I'd focus on for a **Senior Platform/DevOps interview**.
+
+You have:
+
+```text
+VirtualService
+DestinationRule
+Gateway
+Service
+Endpoints
+```
+
+Istiod watches these resources.
+
+It constructs the desired configuration for each Envoy proxy.
+
+For our example:
+
+```text
+                   Istiod
+                     │
+       ┌─────────────┼──────────────┐
+       │             │              │
+       ▼             ▼              ▼
+      RDS            CDS            EDS
+       │             │              │
+       ▼             ▼              ▼
+   HTTP Routes     Clusters       Endpoints
+       │             │              │
+       └─────────────┼──────────────┘
+                     │
+                     ▼
+                 Envoy Gateway
+```
+
+### RDS
+
+Tells Envoy:
+
+```text
+myapp.example.com
+/orders
+/etc...
+
+90% → cluster v1
+10% → cluster v2
+```
+
+### CDS
+
+Tells Envoy:
+
+```text
+cluster v1
+cluster v2
+```
+
+### EDS
+
+Tells Envoy:
+
+```text
+v1 → 10.10.1.10
+      10.10.1.11
+      10.10.1.12
+
+v2 → 10.10.2.10
+```
+
+---
+
+# 20. The entire demo in one picture
+
+```text
+                         USER
+                          │
+                          │ HTTP
+                          ▼
+               ┌─────────────────────┐
+               │ Istio LoadBalancer   │
+               │ Ingress Gateway      │
+               │      Envoy           │
+               └──────────┬──────────┘
+                          │
+                          │ RDS
+                          ▼
+                 ┌─────────────────┐
+                 │ VirtualService  │
+                 │                 │
+                 │  v1 = 90%       │
+                 │  v2 = 10%       │
+                 └───────┬─────────┘
+                         │
+                 ┌───────┴────────┐
+                 │                │
+                90%              10%
+                 │                │
+                 ▼                ▼
+        ┌────────────────┐ ┌────────────────┐
+        │ DestinationRule│ │ DestinationRule│
+        │    subset v1   │ │    subset v2   │
+        └───────┬────────┘ └───────┬────────┘
+                │                  │
+                ▼                  ▼
+          myapp-v1 Pods       myapp-v2 Pod
+             3 replicas          1 replica
+
+
+                    CONTROL PLANE
+                         │
+                         ▼
+                       Istiod
+                         │
+          ┌──────────────┼──────────────┐
+          │              │              │
+          ▼              ▼              ▼
+         RDS            CDS            EDS
+       Routes         Clusters       Endpoints
+          │              │              │
+          └──────────────┼──────────────┘
+                         │
+                         │ xDS
+                         ▼
+                  Envoy Gateway
+```
+
+## The key interview answer
+
+If they ask:
+
+> **"How does Istio perform a canary deployment?"**
+
+Say:
+
+> "We deploy multiple versions of the application with different labels, define those versions as subsets using a DestinationRule, and use a VirtualService to assign traffic weights to those subsets. Istiod watches these resources, translates them into Envoy xDS configuration—primarily RDS for routing, CDS for clusters and EDS for endpoints—and pushes that configuration dynamically to the Envoy proxy. The proxy then performs the actual 90/10 or 50/50 traffic distribution."
+
+And if they ask:
+
+> **"Where can you verify that the configuration actually reached Envoy?"**
+
+Use:
+
+```bash
+istioctl proxy-config routes <gateway-pod> -n istio-system
+istioctl proxy-config clusters <gateway-pod> -n istio-system
+istioctl proxy-config endpoints <gateway-pod> -n istio-system
+```
+
+That is the **Istio equivalent of checking the generated `nginx.conf`** in your NGINX Ingress troubleshooting workflow.
+
+---
 
 ### One-line interview answer
 
