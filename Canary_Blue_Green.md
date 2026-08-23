@@ -6,33 +6,25 @@ It is to focus on **how traffic moves between old and new versions**.
 
 ### Blue-Green
 
-You maintain **two complete environments**:
+**Blue-Green deployment** is a release strategy where you run two identical production environments: one hosting the live version (**Blue**) and the other hosting the new version (**Green**). Once the Green environment is verified, a router or load balancer switches live user traffic from Blue to Green instantly.
 
-```text
-                Load Balancer
-                     |
-             +-------+-------+
-             |               |
-             v               v
-          BLUE            GREEN
-         v1.0              v2.0
-          |                 |
-       5 Pods            5 Pods
-```
+**How the Workflow Works**
 
-Initially:
+1. **Active State (Blue Live):** User traffic is routed entirely to the Blue environment running version `v1.0`.
+2. **Deploy to Idle (Green):** Deploy version `v2.0` to the Green environment. Perform smoke tests, automated checks, and functional validation in isolation without impacting live users.
+3. **Cutover:** Update the load balancer, ingress controller, or DNS to route incoming traffic from Blue to Green (`v2.0` becomes live).
+4. **Monitoring & Rollback:** If errors spike, switch traffic back to Blue immediately with zero downtime. If stable, decommission or keep Blue on standby for the next cycle.
 
-```text
-100% traffic → BLUE
-```
+---
+<img width="867" height="541" alt="image" src="https://github.com/user-attachments/assets/c1003e52-78f7-453d-8722-906593b29504" />
 
-After validation:
+**Trade-offs & Considerations**
 
-```text
-100% traffic → GREEN
-```
-
-So Blue-Green is basically:
+| Advantage | Trade-off / Challenge |
+| --- | --- |
+| **Zero Downtime:** Traffic switch is nearly instantaneous. | **Double Resource Cost:** Requires provisioning 2x infrastructure capacity during deployments. |
+| **Instant Rollback:** Reverting to the old version takes a single routing update. | **Stateful / Database Schema Drift:** Schema migrations must maintain backward compatibility across both `v1` and `v2`. |
+| **Production-Grade Testing:** Green environment can be tested with real production infrastructure before cutover. | **Session Handling:** Shared state or distributed caches (e.g., Redis) are needed to avoid dropping active sessions during the cutover. |
 
 > **"Run the new version alongside the old version, then switch traffic."**
 
