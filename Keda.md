@@ -720,3 +720,122 @@ spec:
 * **Selector Mismatch:** The `ServiceMonitor.spec.selector` matches against the **Service's `metadata.labels**`, not the Deployment's labels or Pod labels.
 * **Namespace Isolation:** If the Service and Prometheus are in different namespaces, ensure `serviceMonitorNamespaceSelector: {}` is set on the `Prometheus` resource, or define explicit `namespaceSelector` rules in the `ServiceMonitor`.
 * **No Healthy Endpoints:** A ServiceMonitor extracts targets from the Kubernetes `Endpoints` / `EndpointSlices` resource created by the Service. If no Pods pass their readiness probes, no scrape targets will be registered.
+
+---
+
+**Prometheus Adapter** and **KEDA** (Kubernetes Event-driven Autoscaling) both enable pod autoscaling in Kubernetes using application or infrastructure metrics, but they solve the problem at fundamentally different architectural layers.
+
+Prometheus Adapter acts as a translation bridge for Kubernetes' native `custom.metrics.k8s.io` and `external.metrics.k8s.io` APIs, whereas KEDA is an event-driven autoscaling operator that manages HPA definitions and adds support for 60+ external event sources along with scale-to-zero capabilities.
+
+---
+
+### Key Architectural Differences
+
+```
+Prometheus Adapter Architecture:
+[ Prometheus ] <--- (PromQL) --- [ Prometheus Adapter ] <=== (K8s Custom Metrics API) === [ Native HPA ] ---> [ Pod (Min: 1) ]
+
+KEDA Architecture:
+[ 60+ Sources / Prometheus / Queues ] <--- [ KEDA Controller ] ---> [ Creates & Drives HPA ] ---> [ Pod (0 to N) ]
+                                                  |
+                                                  +---> Directly scales 0 -> 1 and 1 -> 0
+
+```
+
+| Feature | Prometheus Adapter | KEDA (Kubernetes Event-driven Autoscaling) |
+| --- | --- | --- |
+| **Primary Role** | Metrics API server implementing `custom.metrics.k8s.io` / `external.metrics.k8s.io`. | Full autoscaler controller and metrics adapter extending HPA. |
+| **Supported Sources** | **Prometheus only** (via PromQL). | **60+ scalers** (Prometheus, Kafka, AWS SQS, RabbitMQ, Redis, Cron, Datadog, etc.). |
+| **Scale-to-Zero ($0 \leftrightarrow 1$)** | ❌ **No**. Native HPA requires at least 1 pod running to scrape custom pod metrics. | ✅ **Yes**. KEDA intercepts traffic/queues, scales 0 to 1, and hands scaling beyond 1 replica to HPA. |
+| **Target Resources** | Deployments, StatefulSets via standard HPA CRDs. | Deployments, StatefulSets, Custom Workloads, and **Kubernetes Jobs** (`ScaledJob`). |
+| **Configuration Complexity** | **High / Complex**. Requires defining complex PromQL mapping rules and series queries in adapter config. | **Low / Declarative**. Configured via straightforward CRDs (`ScaledObject` / `ScaledJob`) per workload. |
+| **HPA Relationship** | Supplies metrics *to* the user's manually defined HPA resource. | Automatically **generates and manages** the underlying HPA object. |
+| **Authentication Support** | Basic service account tokens or basic auth to Prometheus. | Rich multi-cloud authentication via `TriggerAuthentication` (AWS IRSA, Vault, Azure Workload Identity). |
+
+---
+
+### Configuration Comparison
+
+**Prometheus Adapter Workflow**
+
+1. Maintain global configuration rules mapping PromQL to custom metrics in the adapter's Helm values:
+
+```yaml
+rules:
+  custom:
+    - seriesQuery: '{__name__=~"^http_requests_total$",namespace!=""}'
+      resources:
+        template: "<<.Resource>>"
+      name:
+        matches: "^(.*)_total"
+        as: "${1}_per_second"
+      metricsQuery: 'sum(rate(<<.Series>>{<<.LabelMatchers>>}[2m])) by (<<.GroupBy>>)'
+
+```
+
+2. Write a manual `HorizontalPodAutoscaler` pointing to that custom metric:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payment-api
+  minReplicas: 1 # Cannot be 0
+  maxReplicas: 10
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "100"
+
+```
+
+---
+
+**KEDA Workflow**
+Everything is encapsulated directly in a single `ScaledObject` without changing global adapter rules:
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: payment-scaledobject
+  namespace: production
+spec:
+  scaleTargetRef:
+    name: payment-api
+  minReplicaCount: 0 # Scales down to zero when idle
+  maxReplicaCount: 10
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-k8s.monitoring.svc:9090
+        metricName: http_requests_total
+        threshold: '100'
+        query: sum(rate(http_requests_total{job="payment-api"}[2m]))
+
+```
+
+---
+
+### When to Pick Which?
+
+* **Choose KEDA if:**
+* You need **scale-to-zero** for cost optimization on bursty or idle workloads.
+* You scale on external event brokers (Kafka lag, AWS SQS queue depth, RabbitMQ).
+* You want to scale batch workers dynamically using Kubernetes **Jobs** (`ScaledJob`).
+* You want developers to manage their own autoscaling definitions without modifying cluster-wide adapter config files.
+
+
+* **Choose Prometheus Adapter if:**
+* You run in an environment where additional third-party operators are prohibited, and you strictly use native Kubernetes `HorizontalPodAutoscaler` CRDs.
+* You already have an established Prometheus stack and only need standard 1-to-N autoscaling driven strictly by internal HTTP/application rates.
