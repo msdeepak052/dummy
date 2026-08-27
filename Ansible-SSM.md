@@ -1,6 +1,6 @@
 # Ansible → AWS Systems Manager (SSM) → EC2
 
-Yes. If the requirement is **10 EC2 instances, deploy Nginx on all of them using Ansible, but absolutely no SSH**, the clean AWS-native approach is:
+If the requirement is **10 EC2 instances, deploy Nginx on all of them using Ansible, but absolutely no SSH**, the clean AWS-native approach is:
 
 **Ansible → AWS Systems Manager (SSM) → EC2**
 
